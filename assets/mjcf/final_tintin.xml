@@ -1,0 +1,82 @@
+<mujoco model="ball-thrust-universal">
+  <compiler angle="degree" coordinate="local"/>
+  <option timestep="0.01" gravity="0 0 0" integrator="RK4"/>
+
+  <visual>
+    <quality shadowsize="2048"/>
+    <headlight diffuse="0.6 0.6 0.6" ambient="0.3 0.3 0.3" specular="0.1 0.1 0.1"/>
+    <map znear="0.001" zfar="50"/>
+  </visual>
+
+  <default>
+    <!-- Contact & visuals -->
+    <geom contype="1" conaffinity="1" friction="0.8 0.1 0.01" rgba="0.8 0.8 0.8 1"/>
+    <site rgba="0.2 0.6 1.0 0.9"/>
+    <!-- Joint defaults (hinges/free inherit damping) -->
+    <joint damping="0.02" limited="true" range="-90 90"/>
+    <!-- Default motor ctrl range (overridden for gimbals below) -->
+    <motor ctrllimited="true" ctrlrange="-2 2"/>
+  </default>
+
+  <asset>
+    <texture name="grid" type="2d" builtin="checker" rgb1="0.9 0.9 0.9" rgb2="0.7 0.7 0.7" width="600" height="600"/>
+    <material name="grid" texture="grid" texrepeat="10 10" reflectance="0.1"/>
+    <mesh name="tintin" file="../meshes/tintin_rocket.obj" scale="0.01 0.01 0.01"/>
+    <mesh name="moon"   file="../meshes/scaled_down_moon.obj" scale="10 10 10"/>
+    <mesh name="engine" file="../meshes/rocket_engine.obj" scale="0.3 0.3 0.3"/>
+  </asset>
+
+  <worldbody>
+    <!-- Moon ground -->
+    <geom name="moon_ground" type="mesh" mesh="moon"
+          pos="0 0 0" quat="0.7071068 0.7071068 0 0"
+          contype="1" conaffinity="1" condim="3"
+          friction="1.0 0.02 0.001" rgba="0.6 0.6 0.65 1"/>
+
+    <!-- Rocket body (single rigid body with free joint) -->
+    <body name="rocket" pos="0 0 1">
+      <freejoint name="ball_free"/>
+
+      <!-- Analytical inertia; geoms remain massless for dynamics -->
+      <inertial pos="0 0 0" mass="1.0" diaginertia="0.010 0.010 0.003"/>
+
+      <!-- Rocket visual/collision mesh.
+           If you want visual-only, set contype/conaffinity=0. -->
+      <geom name="rocket_mesh" type="mesh" mesh="tintin"
+            quat="0.7071068 0.7071068 0 0"
+            contype="1" conaffinity="1" condim="3"
+            rgba="0.9 0.1 0.1 1"/>
+
+      <!-- Gimbal mount 0.45 m below COM -->
+        <body name="thruster_mount" pos="0 0 -0.45">
+            <inertial pos="0 0 0" mass="0.2" diaginertia="1e-4 1e-4 1e-4"/>
+            <joint name="thruster_yaw" type="hinge" axis="1 0 0" range="-25 25"/>
+
+            <body name="thruster_gimbal" pos="0 0 0">
+            <inertial pos="0 0 0" mass="0.3" diaginertia="2e-4 2e-4 2e-4"/>
+            <joint name="thruster_pitch" type="hinge" axis="0 1 0" range="-25 25"/>
+
+            <!-- Nozzle along -Z (exhaust), reaction is +Z -->
+            <geom name="thruster_geom" type="cylinder"
+                    fromto="0 0 0   0 0 -0.15" size="0.04" rgba="0.2 0.6 1.0 0.7"/>
+
+            <!-- Thrust application point: 0.15 m below gimbal -->
+            <site name="thrust_site" pos="0 0 -0.15" type="sphere" size="0.1"
+                    rgba="0.9 0.9 1.0 0.9"/>
+            </body>
+        </body>
+    </body>
+  </worldbody>
+
+  <actuator>
+    <!-- Gimbal motors: give them adequate authority -->
+    <motor name="yaw_motor"   joint="thruster_yaw"   gear="1" ctrllimited="true" ctrlrange="-20 20"/>
+    <motor name="pitch_motor" joint="thruster_pitch" gear="1" ctrllimited="true" ctrlrange="-20 20"/>
+
+    <!-- Thrust actuator: wrench = gear * u applied in site frame -->
+    <general name="thrust" site="thrust_site"
+             gear="0 0 1 0 0 0"
+             biastype="none"
+             ctrllimited="true" ctrlrange="0 20"/>
+  </actuator>
+</mujoco>

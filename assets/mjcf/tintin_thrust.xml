@@ -1,0 +1,90 @@
+<mujoco model="ball-thrust-universal">
+  <compiler angle="degree" coordinate="local"/>
+  <option timestep="0.01" gravity="0 0 -9.81" integrator="RK4"/>
+
+  <visual>
+    <quality shadowsize="2048"/>
+    <headlight diffuse="0.6 0.6 0.6" ambient="0.3 0.3 0.3" specular="0.1 0.1 0.1"/>
+    <map znear="0.001" zfar="50"/>
+  </visual>
+
+  <default>
+    <geom contype="1" conaffinity="1" friction="0.8 0.1 0.01" rgba="0.8 0.8 0.8 1"/>
+    <site rgba="0.2 0.6 1.0 0.9"/>
+    <joint damping="0.02" limited="true" range="-90 90"/>
+    <motor ctrllimited="true" ctrlrange="-2 2"/>
+  </default>
+
+  <asset>
+    <texture name="grid" type="2d" builtin="checker" rgb1="0.9 0.9 0.9" rgb2="0.7 0.7 0.7" width="600" height="600"/>
+    <material name="grid" texture="grid" texrepeat="10 10" reflectance="0.1"/>
+    <mesh name="tintin_rocket" file="../meshes/tintin_rocket_new.obj" scale="0.5 0.5 0.5"/>
+  </asset>
+
+  <worldbody>
+    <!-- ground -->
+    <geom name="ground" type="plane" size="10 10 0.1" material="grid" rgba="1 1 1 1"/>
+
+    <!-- the ball -->
+    <body name="ball" pos="0 0 1">
+        <!-- This gives the ball a free joint with damping to simulate air resistance -->
+        <freejoint name="ball_free"/> 
+
+        <!-- approximate rocket mass/inertia (geoms left massless for visuals/collision) -->
+        <inertial pos="0 0 0" mass="1.0" diaginertia="0.010 0.010 0.003"/>
+
+        <!-- fuselage: slender cylinder -->
+        <geom name="rocket_fuselage" type="cylinder"
+                fromto="0 0 -0.25   0 0 0.25" size="0.08"
+                rgba="0.85 0.2 0.2 1"/>
+
+        <!-- nose: ellipsoid (rounded tip) -->
+        <geom name="rocket_nose" type="ellipsoid"
+                pos="0 0 0.37" size="0.08 0.08 0.12"
+                rgba="0.9 0.3 0.3 1"/>
+
+        <!-- fins: four thin boxes around tail -->
+        <geom name="fin_xp" type="box" pos="0.12 0 -0.22" size="0.10 0.005 0.04" rgba="0.7 0.7 0.7 1"/>
+        <geom name="fin_xn" type="box" pos="-0.12 0 -0.22" size="0.10 0.005 0.04" rgba="0.7 0.7 0.7 1"/>
+        <geom name="fin_yp" type="box" pos="0 0.12 -0.22" size="0.005 0.10 0.04" rgba="0.7 0.7 0.7 1"/>
+        <geom name="fin_yn" type="box" pos="0 -0.12 -0.22" size="0.005 0.10 0.04" rgba="0.7 0.7 0.7 1"/>
+
+        <!-- gimbaled thruster assembly near tail -->
+        <body name="thruster_mount" pos="0 0 -0.25">
+            <inertial pos="0 0 0" mass="0.02" diaginertia="1e-4 1e-4 1e-4"/>
+
+            <!-- yaw hinge ±70° -->
+            <joint name="thruster_yaw" type="hinge" axis="1 0 0" range="-180 180" damping="0.0"/>
+
+            <body name="thruster_gimbal" pos="0 0 0">
+            <inertial pos="0 0 0" mass="0.03" diaginertia="2e-4 2e-4 2e-4"/>
+
+            <!-- pitch hinge ±70° -->
+            <joint name="thruster_pitch" type="hinge" axis="0 1 0" range="-180 180" damping="0.0"/>
+
+            <!-- nozzle tube along local -Z (keeps your site at z=-0.25) -->
+            <geom name="thruster_geom" type="cylinder"
+                    fromto="0 0 0   0 0 -0.25" size="0.02"
+                    rgba="0.2 0.6 1.0 0.7"/>
+
+            <!-- nozzle exit; we apply +Z force here via actuator gear -->
+            <site name="thrust_site" pos="0 0 -0.25" type="sphere" size="0.01"
+                    rgba="0.2 0.6 1.0 0.9"/>
+            </body>
+        </body>
+    </body>
+
+  </worldbody>
+
+  <actuator>
+    <!-- gimbal control -->
+    <motor name="yaw_motor"   joint="thruster_yaw"   gear="1"/>
+    <motor name="pitch_motor" joint="thruster_pitch" gear="1"/>
+
+    <!-- thrust control: wrench = gear * u at thrust_site -->
+    <general name="thrust" site="thrust_site"
+             gear="0 0 1 0 0 0"
+             biastype="none"
+             ctrllimited="true" ctrlrange="0 20"/>
+  </actuator>
+</mujoco>

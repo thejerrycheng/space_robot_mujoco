@@ -1,0 +1,45 @@
+<mujoco model="two_link_gimbal_arm">
+  <compiler angle="degree" coordinate="local"/>
+  <!-- smaller dt for stability with high gains -->
+  <option timestep="0.001" gravity="0 0 0" integrator="RK4"/>
+
+  <default>
+    <!-- Hinges limited to ±90°, with strong damping -->
+    <joint limited="true" range="-90 90" damping="5.0" armature="0.0005"/>
+    <geom type="capsule" rgba="0.8 0.2 0.2 1"/>
+    <site size="0.01" rgba="0.1 0.7 1 1"/>
+  </default>
+
+  <worldbody>
+    <body name="base" pos="0 0 0">
+      <geom type="sphere" size="0.02" rgba="0.3 0.3 0.3 1"/>
+
+      <!-- Link 1: roll (X) then pitch (Y) -->
+      <body name="link1" pos="0 0 0">
+        <joint name="j1_roll"  type="hinge" axis="1 0 0" pos="0 0 0" range="-90 90" limited="true"/>
+        <joint name="j1_pitch" type="hinge" axis="0 1 0" pos="0 0 0" range="-90 90" limited="true"/>
+
+        <geom name="link1_geom" fromto="0 0 0  0 0 0.5" size="0.03" density="800"/>
+
+        <!-- Link 2 attaches at link1 tip -->
+        <body name="link2" pos="0 0 0.5">
+          <joint name="j2_roll"  type="hinge" axis="1 0 0" pos="0 0 0" range="-90 90" limited="true"/>
+          <joint name="j2_pitch" type="hinge" axis="0 1 0" pos="0 0 0" range="-90 90" limited="true"/>
+
+          <geom name="link2_geom" fromto="0 0 0  0 0 0.4" size="0.025" density="800"/>
+          <site name="ee" pos="0 0 0.4"/>
+        </body>
+
+        <site name="link1_tip" pos="0 0 0.5"/>
+      </body>
+    </body>
+  </worldbody>
+
+  <!-- Position actuators: very stiff tracking; controls are radians at runtime -->
+  <actuator>
+    <position name="a_j1_roll"  joint="j1_roll"  kp="4000" ctrllimited="true" ctrlrange="-1.5708 1.5708"/>
+    <position name="a_j1_pitch" joint="j1_pitch" kp="4000" ctrllimited="true" ctrlrange="-1.5708 1.5708"/>
+    <position name="a_j2_roll"  joint="j2_roll"  kp="4000" ctrllimited="true" ctrlrange="-1.5708 1.5708"/>
+    <position name="a_j2_pitch" joint="j2_pitch" kp="4000" ctrllimited="true" ctrlrange="-1.5708 1.5708"/>
+  </actuator>
+</mujoco>

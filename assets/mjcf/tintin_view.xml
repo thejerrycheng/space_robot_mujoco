@@ -1,0 +1,36 @@
+<mujoco model="tintin_moon_view">
+  <option timestep="0.01" gravity="0 0 -9.81"/>
+
+  <asset>
+    <!-- Rocket mesh -->
+    <!-- <mesh name="tintin" file="../meshes/tintin_rocket.obj" scale="0.1 0.1 0.1"/> -->
+    <mesh name="tintin" file="../meshes/tintin_rocket.obj" scale="0.01 0.01 0.01"/>
+    <!-- Moon terrain mesh (pick one of your files) -->
+    <!-- <mesh name="moon"   file="../meshes/moon_terrain.obj" scale="0.1 0.01 0.1"/> -->
+    <mesh name="moon"   file="../meshes/scaled_down_moon.obj" scale="10 10 10"/>
+  </asset>
+
+  <worldbody>
+    <!-- Moon terrain as actual collision geometry -->
+    <geom name="moon_ground" type="mesh" mesh="moon"
+          pos="0 0 0" quat="0.7071068 0.7071068 0 0"
+          contype="1" conaffinity="1" condim="3"
+          friction="1.0 0.02 0.001" rgba="0.6 0.6 0.65 1"/>
+
+    <!-- Rocket (nose +Z), mass/inertia overridden from Python -->
+    <body name="rocket" pos="0 0 80">
+      <freejoint/>
+      <inertial pos="0 0 0" mass="300000" diaginertia="1e8 1e8 1e8"/>
+      <!-- Mesh does BOTH collision and visual; painted red -->
+      <!-- Rotate +90° about X so its top faces +Z -->
+      <geom name="rocket_mesh" type="mesh" mesh="tintin"
+            quat="0.7071068 0.7071068 0 0"
+            contype="1" conaffinity="1" condim="3"
+            rgba="0.9 0.1 0.1 1"/>
+        <!-- Reference site near nozzle (below COM along -Z). Not required for physics. -->
+        <site name="nozzle_site" type="cylinder" pos="0 0 0.17" size="0.02 0.05" rgba="1 0.9 0.1 0.8"/>
+
+    </body>
+
+  </worldbody>
+</mujoco>

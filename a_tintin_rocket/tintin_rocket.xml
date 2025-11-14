@@ -1,0 +1,106 @@
+<mujoco model="tintin_rocket">
+  <!-- G1-style header -->
+  <compiler angle="radian" meshdir="assets"/>
+
+  <option integrator="implicitfast" gravity="0 0 -1.63" timestep="0.002"/>
+  <size njmax="4000" nconmax="1000"/>
+
+  <default>
+    <default class="rocket">
+      <site rgba="1 0 0 1" size="0.01" group="5"/>
+
+      <!-- No internal joints now (rigid rocket+engine), but keep consistent defaults -->
+      <joint armature="0.005" damping="0.05" frictionloss="0.0"/>
+      <position kp="500" dampratio="1" inheritrange="1"/>
+
+      <!-- Visual-only meshes (no contact) -->
+      <default class="visual">
+        <geom group="2" type="mesh" contype="0" conaffinity="0" density="0" material="metal"/>
+      </default>
+
+      <!-- Collision meshes -->
+      <default class="collision">
+        <geom group="3" type="mesh" contype="1" conaffinity="1" condim="3" friction="0.9 0.02 0.001"/>
+      </default>
+    </default>
+  </default>
+
+  <asset>
+    <material name="black" rgba="1 0.1 0.1 1"/>
+    <material name="metal" rgba="0.8 0.8 0.8 1"/>
+    <material name="thrust_flame" rgba="1 0.6 0 0.6"/>  
+
+    <!-- STL meshes -->
+    <mesh name="tintin_body_mesh"   file="tintin_rocket_scaled.stl"/>
+    <mesh name="tintin_engine_mesh" file="tintin_engine.stl"/>
+  </asset>
+
+  <worldbody>
+    <!-- Rigid rocket (body + engine) with free base -->
+    <body name="rocket" pos="0 0 1.2" childclass="rocket">
+      <inertial pos="0 0 -1" mass="100" diaginertia="1.22 1.22 0.37"/>
+      <freejoint name="floating_base_joint"/>
+
+      <!-- Rocket visuals/collision -->
+      <geom class="visual"    material="black" mesh="tintin_body_mesh"/>
+      <geom class="collision"                 mesh="tintin_body_mesh"/>
+
+      <!-- Engine visuals/collision, rigidly welded under rocket -->
+      <geom class="visual"    mesh="tintin_engine_mesh" pos="0 0 -0.80442"/>
+      <geom class="collision" mesh="tintin_engine_mesh" pos="0 0 -0.80442"/>
+
+      <!-- Telemetry site at COM -->
+      <site name="imu_in_body" size="0.01" pos="0 0 0"/>
+
+      <!-- Nozzle site where forces are applied. -->
+      <!-- +X, +Y, +Z of the SITE define force-component directions. -->
+      <site name="thrust_site" pos="0 0 -0.80442" size="0.015" rgba="1 0.2 0.2 1"/>
+
+      <!-- ================= Thrust visualization =================
+           Cylinder aligned with local +Z of thrust_site.
+           We place a child body at the site so its local frame == nozzle frame.
+           The cylinder grows downward: center at (0,0,-h), size=(radius, h).
+           To scale with thrust at runtime:
+             - Let L = k * ||F|| (your chosen mapping, in meters).
+             - Set geom size[1] = h = L/2.
+             - Set geom pos[2]  = -h   (so the top cap touches the nozzle).
+      ========================================================== -->
+      <body name="thrust_vis_frame" pos="0 0 -0.80442">
+        <!-- initial small plume: radius=0.03 m, half-height h=0.05 m -->
+        <geom name="thrust_cylinder" type="cylinder"
+              material="thrust_flame"
+              size="0.03 0.05"
+              pos="0 0 -0.05"
+              contype="0" conaffinity="0"/>
+      </body>
+    </body>
+  </worldbody>
+
+  <actuator>
+    <!-- Apply force components at the nozzle site (in site frame) -->
+    <!-- Fx, Fy (lateral). Limit to emulate max gimbal angle. -->
+    <general name="thrust_Fx" site="thrust_site"
+             gear="1 0 0   0 0 0"
+             ctrllimited="true" ctrlrange="-1 1"/>
+    <general name="thrust_Fy" site="thrust_site"
+             gear="0 1 0   0 0 0"
+             ctrllimited="true" ctrlrange="-1 1"/>
+
+    <!-- Fz (main axial thrust) -->
+    <general name="thrust_Fz" site="thrust_site"
+             gear="0 0 1   0 0 0"
+             ctrllimited="true" ctrlrange="0 100000"/>
+  </actuator>
+
+  <sensor>
+    <gyro           name="imu-angular-velocity" site="imu_in_body" noise="5e-4" cutoff="35"/>
+    <accelerometer  name="imu-linear-accel"     site="imu_in_body" noise="1e-2" cutoff="157"/>
+    <actuatorfrc    name="Fx_readback" actuator="thrust_Fx"/>
+    <actuatorfrc    name="Fy_readback" actuator="thrust_Fy"/>
+    <actuatorfrc    name="Fz_readback" actuator="thrust_Fz"/>
+  </sensor>
+
+  <keyframe>
+    <key name="spawn" qpos="0 0 1.2   1 0 0 0" ctrl="0 0 0"/>
+  </keyframe>
+</mujoco>

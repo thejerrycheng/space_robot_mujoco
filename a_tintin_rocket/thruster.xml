@@ -1,0 +1,37 @@
+<mujoco model="thrust_cylinder_actuated">
+  <compiler angle="degree" coordinate="local"/>
+  <option timestep="0.01" gravity="0 0 -9.81"/>
+
+  <default>
+    <joint damping="0.05" armature="0.001"/>
+    <geom friction="1 0.1 0.01"/>
+    <motor ctrllimited="true"/>
+  </default>
+
+  <worldbody>
+    <geom type="plane" size="5 5 0.1" rgba="0.8 0.8 0.8 1"/>
+    <body name="cylinder" pos="0 0 1">
+      <freejoint/>
+      <inertial pos="0 0 0" mass="5.0" diaginertia="0.026 0.026 0.013"/>
+      <geom type="cylinder" size="0.1 0.5" rgba="0.2 0.6 0.8 1"/>
+
+      <body name="gimbal_pitch" pos="0 0 -0.5">
+        <joint name="pitch_joint" type="hinge" axis="1 0 0" range="-60 60"/>
+        <body name="gimbal_roll" pos="0 0 0">
+          <joint name="roll_joint" type="hinge" axis="0 1 0" range="-60 60"/>
+          <site name="thrust_site" pos="0 0 0" size="0.02" rgba="1 0 0 0.8"/>
+          <geom type="cone" fromto="0 0 0 0 0 -0.15" size="0.05" rgba="1 0.3 0.1 0.8"/>
+        </body>
+      </body>
+    </body>
+  </worldbody>
+
+  <actuator>
+    <general name="thruster" site="thrust_site"
+             gainprm="0 0 1 0 0 0"
+             biasprm="0 0 0 0 0 0"
+             ctrlrange="0 100"/>
+    <motor name="pitch_motor" joint="pitch_joint" ctrlrange="-60 60" gear="1"/>
+    <motor name="roll_motor" joint="roll_joint" ctrlrange="-60 60" gear="1"/>
+  </actuator>
+</mujoco>

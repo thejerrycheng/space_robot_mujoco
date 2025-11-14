@@ -1,0 +1,64 @@
+<mujoco model="flat_world">
+  <compiler angle="radian" coordinate="local"
+            meshdir="../meshes" texturedir="../textures"/>
+  <option timestep="0.01" gravity="0 0 -9.81"/>
+
+  <default>
+    <geom margin="0" solref="0.002 1" solimp="0.99 0.995 0.0005" condim="3"/>
+  </default>
+
+  <contact>
+    <pair geom1="rocket_mesh" geom2="flat_ground"
+          margin="0"
+          solref="0.001 1"
+          solimp="0.999 0.9995 0.0001"/>
+  </contact>
+
+  <asset>
+    <mesh name="tintin_mesh" file="tintin_rocket_new.obj" scale="1 1 1"/>
+    <material name="flame_core_mat"  rgba="1.0 0.95 0.75 0.95" emission="0.8" specular="0.05" shininess="0.2"/>
+    <material name="flame_plume_mat" rgba="1.0 0.55 0.15 0.35" emission="0.4" specular="0.0"  shininess="0.05"/>
+    <material name="rocket_red" rgba="0.85 0.12 0.12 1"/>
+    <material name="goal_green" rgba="0.0 1.0 0.0 0.55" emission="0.2"/>
+  </asset>
+
+  <worldbody>
+    <!-- FLAT GROUND: big thin box; top surface at z=0 -->
+    <!-- box size = half-dims, so height=0.05 gives 0.1 m thick slab -->
+    <geom name="flat_ground" type="box" pos="0 0 -0.05" size="5000 5000 0.05"
+          contype="1" conaffinity="1" condim="3"
+          friction="1.1 0.005 0.0001" rgba="0.65 0.62 0.58 1.0"/>
+
+    <site name="origin_marker" pos="0 0 0" size="0.1" rgba="1 0 1 1"/>
+
+    <!-- Goal marker: green circle with an X -->
+    <body name="goal_marker" pos="0 0 0">
+      <site name="goal_site" pos="0 0 0" size="0.05" rgba="0 1 0 0.8" />
+      <!-- ring: cylinder size = [radius half_length] -->
+      <geom name="goal_ring" type="cylinder" pos="0 0 0.01" size="1.5 0.005"
+            material="goal_green" contype="0" conaffinity="0"/>
+      <!-- X bars (rotate ±45°) ; box size = half-dims -->
+      <geom type="box" name="goal_x1" pos="0 0 0.012" size="1.2 0.03 0.002"
+            rgba="0 1 0 0.8" euler="0 0 0.7854" contype="0" conaffinity="0"/>
+      <geom type="box" name="goal_x2" pos="0 0 0.012" size="1.2 0.03 0.002"
+            rgba="0 1 0 0.8" euler="0 0 -0.7854" contype="0" conaffinity="0"/>
+    </body>
+
+    <!-- Rocket (Y-up mesh -> rotate to Z-up) -->
+    <body name="rocket_root" pos="0 0 150" euler="1.5708 0 0">
+      <joint name="free" type="free"/>
+
+      <geom name="rocket_mesh" type="mesh" mesh="tintin_mesh" material="rocket_red"
+            contype="1" conaffinity="1" condim="3"
+            friction="1.1 0.005 0.0001" mass="50"/>
+
+      <!-- flame visuals (non-colliding) -->
+      <geom name="flame_core"  type="ellipsoid" pos="0 0 100" size="50 50 100"
+            material="flame_core_mat"  contype="0" conaffinity="0" rgba="1 0.9 0.6 0.0"/>
+      <geom name="flame_plume" type="cylinder"  pos="0 0 100" size="100 200"
+            material="flame_plume_mat" contype="0" conaffinity="0" rgba="1 0.5 0.1 0.0"/>
+
+      <site name="engine_site" pos="0 0 0.32" size="0.01" rgba="0 0 0 0"/>
+    </body>
+  </worldbody>
+</mujoco>
