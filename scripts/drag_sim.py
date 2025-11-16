@@ -17,7 +17,7 @@ def unit(v: np.ndarray) -> np.ndarray:
 
 # ---------------- Params & Aero ----------------
 @dataclass
-class Params:
+class Params: 
     # environment & propulsion
     g: np.ndarray          # [m/s^2] gravity vector (downward)
     rho: float             # [kg/m^3] air density (constant here)
