@@ -68,7 +68,7 @@ DT = model.opt.timestep
 # -------------------------------------------------------------
 # Target Position for 3-Axis Control
 # -------------------------------------------------------------
-TARGET_POS = np.array([2.0, 2.0, 10.0])    # (x, y, z)
+TARGET_POS = np.array([0.2, 0.2, 10.0])    # (x, y, z)
 
 # Position PID gains
 Kp_pos = np.array([3.0, 3.0, 6.0])

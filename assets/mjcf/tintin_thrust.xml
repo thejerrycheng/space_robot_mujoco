@@ -90,6 +90,6 @@
     <general name="thrust" site="thrust_site"
              gear="0 0 1 0 0 0"
              biastype="none"
-             ctrllimited="true" ctrlrange="0 2000"/>
+             ctrllimited="true" ctrlrange="0 10000"/>
   </actuator>
 </mujoco>

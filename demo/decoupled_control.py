@@ -29,15 +29,10 @@ thrust_act_id  = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_ACTUATOR, "thrust"
 # Helper Functions
 # -------------------------------------------------------------
 def get_pos():
-    return data.xpos[rocket_bid].copy()
-
-def get_vel():
-    # cvel: [ang(3), lin(3)] in body frame; but for simplicity we use xvel (world lin vel)
-    return data.cvel[rocket_bid][3:].copy()
+    return data.xpos[rocket_bid].copy()  # world COM position
 
 def get_body_rot():
-    # 3x3 rotation matrix body->world
-    return data.xmat[rocket_bid].reshape(3, 3)
+    return data.xmat[rocket_bid].reshape(3, 3)  # body->world
 
 def get_gimbal_state():
     yaw_qpos   = data.qpos[model.jnt_qposadr[yaw_joint_id]]
@@ -50,123 +45,149 @@ def get_gimbal_state():
 # -------------------------------------------------------------
 # Fuel & Mass Parameters
 # -------------------------------------------------------------
-DRY_MASS = model.body_mass[rocket_bid]  # from XML inertial of "ball" (100 kg)
+DRY_MASS = model.body_mass[rocket_bid]  # from XML "ball" inertial
 
 INITIAL_FUEL_MASS = 50.0
 fuel_mass = INITIAL_FUEL_MASS
 total_mass = DRY_MASS + fuel_mass
 
-# Save original inertia to scale later
 orig_inertia = model.body_inertia[rocket_bid].copy()
 initial_total_mass = total_mass
 
-# Rocket engine parameters
-ISP = 250.0          # s
-G0 = 9.81            # m/s^2
+ISP = 250.0
+G0 = 9.81
 DT = model.opt.timestep
-F_MAX = 2000.0       # from ctrlrange of thrust actuator
-
+F_MAX = 2000.0
 g_vec = np.array([0.0, 0.0, -G0])
 
 
 # -------------------------------------------------------------
-# Position PID (outer loop) to target (2,2,10)
+# Target and Position Controller
 # -------------------------------------------------------------
-TARGET_POS = np.array([2.0, 2.0, 10.0])
+TARGET_POS = np.array([0.5, 0.5, 10.0])  # goal (x,y,z)
 
-Kp_pos = np.array([3.0, 3.0, 6.0])
-Ki_pos = np.array([0.0, 0.0, 1.0])
-Kd_pos = np.array([4.0, 4.0, 8.0])
+# Lateral gains
+Kp_xy = 1
+Kd_xy = 0.2
 
-pos_integral = np.zeros(3)
-last_pos_err = np.zeros(3)
+# Vertical gains
+Kp_z = 2.0
+Kd_z = 1.0
+Ki_z = 0.01
+z_int = 0.0
+
+# Gimbal PD
+Kp_gimbal = 6.0
+Kd_gimbal = 1.0
+
+MAX_GIMBAL_ANGLE  = np.radians(30.0)
+MAX_GIMBAL_TORQUE = 500.0
+
+# for numerical velocity
+last_pos = None
 
 
 # -------------------------------------------------------------
-# Gimbal joint PD (servo yaw/pitch angles)
-# -------------------------------------------------------------
-Kp_gimbal = 10.0
-Kd_gimbal = 0.2
-
-MAX_GIMBAL_ANGLE = np.radians(30.0)       # joint range
-MAX_GIMBAL_TORQUE = 50.0                  # from ctrlrange in XML
-
-
-# -------------------------------------------------------------
-# Viewer + 3D Thrust Vectoring Control
+# Viewer + Nonlinear Thrust-Vector Control
 # -------------------------------------------------------------
 with mujoco.viewer.launch_passive(model, data) as viewer:
     step = 0
 
+    # make sure initial forward kinematics is computed
+    mujoco.mj_forward(model, data)
+    last_pos = get_pos()
+
     while viewer.is_running():
         # -----------------------------------------------------
-        # Read state
+        # State
         # -----------------------------------------------------
         pos = get_pos()
-        vel = get_vel()
-        R   = get_body_rot()  # body->world
+        vel = (pos - last_pos) / DT
+        last_pos = pos.copy()
+
+        R = get_body_rot()  # body->world
 
         pos_err = TARGET_POS - pos
-        d_err   = (pos_err - last_pos_err) / DT
-        last_pos_err = pos_err.copy()
-
-        # Only integrate vertical error to avoid drift
-        pos_integral[2] += pos_err[2] * DT
-        pos_integral[2] = np.clip(pos_integral[2], -10.0, 10.0)
+        vel_err = -vel
 
         # -----------------------------------------------------
-        # Desired acceleration (world frame)
+        # Vertical control (z)
         # -----------------------------------------------------
-        acc_cmd = (
-            Kp_pos * pos_err +
-            Ki_pos * pos_integral +
-            Kd_pos * d_err
-        )
+        z_err = pos_err[2]
+        z_vel = vel[2]
 
-        # Desired thrust force (world): F = m (a_cmd - g)
-        F_des_world = total_mass * (acc_cmd - g_vec)
+        z_int += z_err * DT
+        z_int = np.clip(z_int, -10.0, 10.0)
 
+        a_z_cmd = Kp_z * z_err + Ki_z * z_int - Kd_z * z_vel
+
+        # Desired vertical force: Fz = m * (a_z_cmd + g)
+        Fz = total_mass * (a_z_cmd + G0)
+        Fz = max(0.0, Fz)  # no negative thrust
+
+        # -----------------------------------------------------
+        # Lateral control (x,y)
+        # -----------------------------------------------------
+        a_lat_cmd = np.zeros(2)
+        a_lat_cmd[0] = Kp_xy * pos_err[0] - Kd_xy * vel[0]
+        a_lat_cmd[1] = Kp_xy * pos_err[1] - Kd_xy * vel[1]
+
+        Fxy = total_mass * a_lat_cmd
+        Fxy_norm = np.linalg.norm(Fxy)
+
+        # -----------------------------------------------------
+        # Respect thrust limit: sqrt(Fz^2 + |Fxy|^2) <= F_MAX
+        # -----------------------------------------------------
+        if Fz > F_MAX:
+            # Too much vertical demand; cap and kill lateral
+            Fz = F_MAX
+            Fxy[:] = 0.0
+        else:
+            # Max allowed lateral magnitude given Fz
+            Fxy_max = np.sqrt(max(F_MAX**2 - Fz**2, 0.0))
+            if Fxy_norm > 1e-6:
+                scale = min(1.0, Fxy_max / Fxy_norm)
+                Fxy *= scale
+
+        # Final desired force in world frame
+        F_des_world = np.array([Fxy[0], Fxy[1], Fz])
         F_mag = np.linalg.norm(F_des_world)
 
         if fuel_mass <= 0.0 or F_mag < 1e-6:
-            # Out of fuel or insignificant command → no thrust, center gimbals
             thrust_cmd = 0.0
             yaw_des = 0.0
             pitch_des = 0.0
         else:
-            # Saturate thrust magnitude
-            F_mag = min(F_mag, F_MAX)
-            thrust_cmd = F_mag
+            # Thrust magnitude (still capped by F_MAX)
+            thrust_cmd = min(F_mag, F_MAX)
 
-            # Desired thrust direction (world unit vector)
-            u_world = F_des_world / np.linalg.norm(F_des_world)
+            # Desired thrust direction (world)
+            u_world = F_des_world / thrust_cmd
 
-            # Convert desired direction to body frame
-            # body_vec = R^T * world_vec
+            # Convert thrust direction to body frame
             u_body = R.T @ u_world
             ux, uy, uz = u_body
 
-            # Solve for yaw (about x) and pitch (about y) such that
-            # d_body = R_y(pitch) * R_x(yaw) * [0, 0, 1] = u_body
-            #
-            # Analytic solution:
-            #  uy = sin(yaw)
-            #  ux = sin(pitch)*cos(yaw)
-            #  uz = cos(pitch)*cos(yaw)
-            yaw_des   = np.arcsin(np.clip(uy, -1.0, 1.0))
-            cos_yaw   = np.cos(yaw_des)
-            # avoid division by zero when cos_yaw ~ 0
-            if abs(cos_yaw) < 1e-6:
-                pitch_des = 0.0
-            else:
-                pitch_des = np.arctan2(ux, uz)
+            # ---- CORRECT inverse gimbal kinematics ----
+            # u_body = Rx(yaw) * Ry(pitch) * e_z  ⇒
+            # ux = sin(pitch)
+            # uy = -sin(yaw)*cos(pitch)
+            # uz =  cos(yaw)*cos(pitch)
 
-            # Limit gimbal angles to physical range
+            pitch_des = np.arcsin(np.clip(ux, -1.0, 1.0))
+            cos_pitch = np.cos(pitch_des)
+
+            if abs(cos_pitch) < 1e-6:
+                yaw_des = 0.0
+            else:
+                yaw_des = np.arctan2(-uy, uz)
+
+            # Limit gimbal angles
             yaw_des   = np.clip(yaw_des,   -MAX_GIMBAL_ANGLE, MAX_GIMBAL_ANGLE)
             pitch_des = np.clip(pitch_des, -MAX_GIMBAL_ANGLE, MAX_GIMBAL_ANGLE)
 
         # -----------------------------------------------------
-        # Gimbal PD: compute torques to reach yaw_des, pitch_des
+        # Gimbal PD control
         # -----------------------------------------------------
         yaw_angle, pitch_angle, yaw_vel, pitch_vel = get_gimbal_state()
 
@@ -187,16 +208,16 @@ with mujoco.viewer.launch_passive(model, data) as viewer:
         data.ctrl[pitch_act_id]  = pitch_torque
 
         # -----------------------------------------------------
-        # Fuel burn & mass / inertia update
+        # Fuel burn & mass/inertia update
         # -----------------------------------------------------
-        if fuel_mass > 0.0:
-            mass_flow_rate = -thrust_cmd / (ISP * G0)  # dm/dt
-            fuel_mass += mass_flow_rate * DT
+        if fuel_mass > 0.0 and thrust_cmd > 0.0:
+            mdot = -thrust_cmd / (ISP * G0)
+            fuel_mass += mdot * DT
             fuel_mass = max(0.0, fuel_mass)
 
         total_mass = DRY_MASS + fuel_mass
-
         mass_ratio = total_mass / initial_total_mass
+
         model.body_mass[rocket_bid]    = total_mass
         model.body_inertia[rocket_bid] = orig_inertia * mass_ratio
 
@@ -209,10 +230,10 @@ with mujoco.viewer.launch_passive(model, data) as viewer:
         print(f"Step {step:04d}")
         print(f"  Pos           : {pos}")
         print(f"  Target        : {TARGET_POS}")
-        print(f"  Fuel Mass     : {fuel_mass:.3f} kg")
         print(f"  Thrust (N)    : {thrust_cmd:.1f}")
-        print(f"  Yaw angle     : {np.degrees(yaw_angle):.2f} deg (des {np.degrees(yaw_des):.2f})")
-        print(f"  Pitch angle   : {np.degrees(pitch_angle):.2f} deg (des {np.degrees(pitch_des):.2f})\n")
+        print(f"  Fuel Mass (kg): {fuel_mass:.3f}")
+        print(f"  Gimbal yaw    : {np.degrees(yaw_angle):.2f} deg (des {np.degrees(yaw_des):.2f})")
+        print(f"  Gimbal pitch  : {np.degrees(pitch_angle):.2f} deg (des {np.degrees(pitch_des):.2f})\n")
 
         step += 1
         viewer.sync()

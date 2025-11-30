@@ -31,3 +31,48 @@ WARNING: Nan, Inf or huge value in QPOS at DOF 2. The simulation is unstable. Ti
 Tue Oct 14 17:26:44 2025
 WARNING: Nan, Inf or huge value in QACC at DOF 0. The simulation is unstable. Time = 167.8000.
 
+Sun Nov 30 02:26:53 2025
+WARNING: Nan, Inf or huge value in QACC at DOF 0. The simulation is unstable. Time = 10.5600.
+
+Sun Nov 30 02:28:06 2025
+WARNING: Nan, Inf or huge value in QACC at DOF 0. The simulation is unstable. Time = 2.0400.
+
+Sun Nov 30 02:28:09 2025
+WARNING: Nan, Inf or huge value in QVEL at DOF 0. The simulation is unstable. Time = 2.1700.
+
+Sun Nov 30 02:28:17 2025
+WARNING: Nan, Inf or huge value in QACC at DOF 0. The simulation is unstable. Time = 2.0600.
+
+Sun Nov 30 02:28:20 2025
+WARNING: Nan, Inf or huge value in QVEL at DOF 0. The simulation is unstable. Time = 1.9200.
+
+Sun Nov 30 02:28:21 2025
+WARNING: Nan, Inf or huge value in QACC at DOF 3. The simulation is unstable. Time = 0.4900.
+
+Sun Nov 30 02:28:24 2025
+WARNING: Nan, Inf or huge value in QVEL at DOF 3. The simulation is unstable. Time = 1.6900.
+
+Sun Nov 30 02:28:31 2025
+WARNING: Nan, Inf or huge value in QACC at DOF 0. The simulation is unstable. Time = 0.3300.
+
+Sun Nov 30 02:28:34 2025
+WARNING: Nan, Inf or huge value in QVEL at DOF 0. The simulation is unstable. Time = 1.3400.
+
+Sun Nov 30 02:28:36 2025
+WARNING: Nan, Inf or huge value in QACC at DOF 3. The simulation is unstable. Time = 0.4100.
+
+Sun Nov 30 02:28:38 2025
+WARNING: Nan, Inf or huge value in QPOS at DOF 7. The simulation is unstable. Time = 1.7600.
+
+Sun Nov 30 02:28:41 2025
+WARNING: Nan, Inf or huge value in QVEL at DOF 0. The simulation is unstable. Time = 1.9600.
+
+Sun Nov 30 02:28:42 2025
+WARNING: Nan, Inf or huge value in QACC at DOF 0. The simulation is unstable. Time = 0.9400.
+
+Sun Nov 30 02:28:45 2025
+WARNING: Nan, Inf or huge value in QVEL at DOF 3. The simulation is unstable. Time = 1.8100.
+
+Sun Nov 30 02:29:01 2025
+WARNING: Nan, Inf or huge value in QACC at DOF 0. The simulation is unstable. Time = 10.5600.
+
