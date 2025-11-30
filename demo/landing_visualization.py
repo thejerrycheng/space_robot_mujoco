@@ -68,6 +68,22 @@ def get_vel():
 # -------------------------------------------------------------
 # Mass & Fuel
 # -------------------------------------------------------------
+
+def set_plume_length(length):
+    # minimum safe half-length
+    MIN_HALF = 0.005
+    half_len = max(length * 0.5, MIN_HALF)
+
+    # Set geom half-length
+    model.geom_size[plume_geom_id][1] = half_len
+
+    # Position center halfway down the plume
+    model.geom_pos[plume_geom_id][2] = -0.25 - half_len
+
+    # Pointing down (-Z): quaternion (180° rotation about X axis)
+    model.geom_quat[plume_geom_id] = np.array([0, 1, 0, 0])
+
+
 DRY_MASS = model.body_mass[rocket_bid]
 INITIAL_FUEL_MASS = 10.0
 fuel_mass = INITIAL_FUEL_MASS
@@ -137,8 +153,11 @@ with mujoco.viewer.launch_passive(model, data) as viewer:
         start = np.array([0.0, 0.0, -0.25])
         end   = np.array([0.0, 0.0, -0.25 - plume_len])
 
-        model.geom_fromto[plume_geom_id, 0:3] = start
-        model.geom_fromto[plume_geom_id, 3:6] = end
+        # normalized thrust → plume length
+        norm = np.clip(thrust_cmd / 2200.0, 0.0, 1.0)
+        plume_length = 0.5 * norm   # max 0.5m
+
+        set_plume_length(plume_length)
 
 
         # -----------------------------------------------------
