@@ -31,7 +31,7 @@
         <freejoint name="ball_free"/> 
 
         <!-- approximate rocket mass/inertia (geoms left massless for visuals/collision) -->
-        <inertial pos="0 0 0" mass="1.0" diaginertia="0.010 0.010 0.003"/>
+        <inertial pos="0 0 0" mass="100" diaginertia="0.010 0.010 0.003"/>
 
         <!-- fuselage: slender cylinder -->
         <geom name="rocket_fuselage" type="cylinder"
@@ -51,26 +51,27 @@
 
         <!-- gimbaled thruster assembly near tail -->
         <body name="thruster_mount" pos="0 0 -0.25">
-            <inertial pos="0 0 0" mass="0.02" diaginertia="1e-4 1e-4 1e-4"/>
+            <inertial pos="0 0 0" mass="20" diaginertia="1e-4 1e-4 1e-4"/>
 
             <!-- yaw hinge ±70° -->
-            <joint name="thruster_yaw" type="hinge" axis="1 0 0" range="-180 180" damping="0.0"/>
+            <joint name="thruster_yaw" type="hinge" axis="1 0 0" range="-30 30" damping="0.0"/>
 
-            <body name="thruster_gimbal" pos="0 0 0">
-            <inertial pos="0 0 0" mass="0.03" diaginertia="2e-4 2e-4 2e-4"/>
+             <body name="thruster_gimbal" pos="0 0 0">
+                  <inertial pos="0 0 0" mass="30" diaginertia="2e-4 2e-4 2e-4"/>
 
-            <!-- pitch hinge ±70° -->
-            <joint name="thruster_pitch" type="hinge" axis="0 1 0" range="-180 180" damping="0.0"/>
+                  <!-- pitch hinge ±15° -->
+                  <joint name="thruster_pitch" type="hinge" axis="0 1 0"
+                        range="-30 30" damping="0.0"/>
 
-            <!-- nozzle tube along local -Z (keeps your site at z=-0.25) -->
-            <geom name="thruster_geom" type="cylinder"
-                    fromto="0 0 0   0 0 -0.25" size="0.02"
-                    rgba="0.2 0.6 1.0 0.7"/>
+                  <!-- nozzle tube along local -Z -->
+                  <geom name="thruster_geom" type="cylinder"
+                        fromto="0 0 0   0 0 -0.25" size="0.02"
+                        rgba="0.2 0.6 1.0 0.7"/>
 
-            <!-- nozzle exit; we apply +Z force here via actuator gear -->
-            <site name="thrust_site" pos="0 0 -0.25" type="sphere" size="0.01"
-                    rgba="0.2 0.6 1.0 0.9"/>
-            </body>
+                  <!-- thrust application site -->
+                  <site name="thrust_site" pos="0 0 -0.25" type="sphere"
+                        size="0.01" rgba="0.2 0.6 1.0 0.9"/>
+              </body>
         </body>
     </body>
 
@@ -78,13 +79,17 @@
 
   <actuator>
     <!-- gimbal control -->
-    <motor name="yaw_motor"   joint="thruster_yaw"   gear="1"/>
-    <motor name="pitch_motor" joint="thruster_pitch" gear="1"/>
+    <motor name="yaw_motor" joint="thruster_yaw" gear="1"
+       ctrllimited="true" ctrlrange="-50 50"/>
+
+    <motor name="pitch_motor" joint="thruster_pitch" gear="1"
+       ctrllimited="true" ctrlrange="-50 50"/>
+
 
     <!-- thrust control: wrench = gear * u at thrust_site -->
     <general name="thrust" site="thrust_site"
              gear="0 0 1 0 0 0"
              biastype="none"
-             ctrllimited="true" ctrlrange="0 20"/>
+             ctrllimited="true" ctrlrange="0 2000"/>
   </actuator>
 </mujoco>
