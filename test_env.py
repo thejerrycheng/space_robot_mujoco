@@ -1,6 +1,9 @@
 import numpy as np
 import time
 import sys
+import mujoco
+import matplotlib.pyplot as plt
+from mpl_toolkits.mplot3d import Axes3D
 from rocket_env.rocket_landing_env import RocketLandingEnv
 
 # ================================================================
@@ -53,14 +56,33 @@ def randomize_initial_state(env):
     env.data.qvel[env.qvel_adr : env.qvel_adr+3] = [
         np.random.uniform(-2, 2), np.random.uniform(-2, 2), np.random.uniform(-5, -1)
     ]
-    import mujoco
+
     mujoco.mj_forward(env.model, env.data)
+
+def plot_all_trajectories(trajectories):
+    """ Plots all collected trajectories in a 3D space. """
+    fig = plt.figure()
+    ax = fig.add_subplot(111, projection='3d')
+    
+    colors = plt.cm.jet(np.linspace(0, 1, len(trajectories)))
+    
+    for i, trajectory in enumerate(trajectories):
+        trajectory = np.array(trajectory)
+        ax.plot(trajectory[:, 0], trajectory[:, 1], trajectory[:, 2], color=colors[i], label=f'Episode {i+1}')
+        
+    ax.set_xlabel('X Position')
+    ax.set_ylabel('Y Position')
+    ax.set_zlabel('Z Position (Altitude)')
+    ax.set_title('Rocket Trajectories')
+    ax.legend()
+    plt.show()
 
 # ================================================================
 #   MAIN LOOP
 # ================================================================
-def test_env(random_actions=True, episodes=5):
+def test_env(episodes=5):
     env = RocketLandingEnv(render_mode="human")
+    all_trajectories = []
 
     for ep in range(episodes):
         print(f"\n{Col.BOLD}🚀 EPISODE {ep+1}/{episodes}{Col.RESET}")
@@ -72,21 +94,23 @@ def test_env(random_actions=True, episodes=5):
 
         env.reset()
         env.render()
+        
+        # Apply extra randomization if desired (optional)
         randomize_initial_state(env)
         env.render()
 
         done = False
         truncated = False
         step = 0
+        episode_trajectory = []
 
         while not (done or truncated):
             step += 1
             
-            # --- 1. GET ACTION ---
-            if random_actions:
-                action = env.action_space.sample()
-            else:
-                action = np.zeros(3) # Hover
+            # --- 1. NO ACTION (PASSIVE DROP TEST) ---
+            # Action [-1, 0, 0] maps to 0% Thrust (Free fall)
+            # Action [0, 0, 0] maps to 50% Thrust (Hover-ish)
+            action = np.array([-1.0, 0.0, 0.0]) 
 
             # --- 2. STEP ---
             obs, reward, done, truncated, info = env.step(action)
@@ -101,7 +125,6 @@ def test_env(random_actions=True, episodes=5):
             roll, pitch, yaw = quat_to_euler(quat)
             
             # Mass Calculation (Dry + Fuel)
-            # Note: We access env.fuel_mass because that's where the changing value is stored
             current_mass = env.DRY_MASS + env.fuel_mass
 
             # Controls (Actual Actuator Outputs)
@@ -109,9 +132,10 @@ def test_env(random_actions=True, episodes=5):
             g_yaw    = np.degrees(env.data.ctrl[env.yaw_act])
             g_pit    = np.degrees(env.data.ctrl[env.pitch_act])
 
+            # Collect trajectory data
+            episode_trajectory.append(pos.copy())
+
             # --- 4. FORMAT DASHBOARD STRING ---
-            # Using fixed width {:X.Yf} to prevent jitter
-            
             state_str = (
                 f"Alt:{pos[2]:5.1f}m "
                 f"Vz:{vel[2]:5.1f} "
@@ -129,13 +153,15 @@ def test_env(random_actions=True, episodes=5):
                 f"\r{step:04}  | "
                 f"{Col.CYAN}{state_str}{Col.RESET} | "
                 f"{Col.YELLOW}{ctrl_str}{Col.RESET}     | "
-                f"{Col.GREEN}{reward:6.1f}{Col.RESET} \033[K" # \033[K clears rest of line
+                f"{Col.GREEN}{reward:6.1f}{Col.RESET} \033[K"
             )
 
             sys.stdout.write(log_line)
             sys.stdout.flush()
 
-            time.sleep(0.02) # Slow down to make it readable
+            time.sleep(0.02) 
+
+        all_trajectories.append(episode_trajectory)
 
         # Episode Result
         result_color = Col.GREEN if info.get('success') else Col.RED
@@ -143,7 +169,8 @@ def test_env(random_actions=True, episodes=5):
         print(f"\n{result_color}>>> RESULT: {result_msg}{Col.RESET}")
 
     env.close()
-    print("\n🎉 Test complete.\n")
+    print("\n🎉 Test complete. Plotting trajectories...")
+    plot_all_trajectories(all_trajectories)
 
 if __name__ == "__main__":
-    test_env(random_actions=True, episodes=10)
+    test_env(episodes=10)
