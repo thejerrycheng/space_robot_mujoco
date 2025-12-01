@@ -1,6 +1,8 @@
 import os
 import time
 import numpy as np
+import mujoco.viewer
+
 
 from stable_baselines3 import PPO
 from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
@@ -61,32 +63,33 @@ class SaveAndVisualizeCallback(BaseCallback):
 
     def _visualize_policy(self):
         """
-        Uses mujoco-python-viewer for rendering.
+        Uses the official MuJoCo viewer bundled with mujoco>=3.1.
         """
-        from mujoco_python_viewer import Viewer  # <- NEW viewer
+        import mujoco.viewer
 
-        env = RocketLandingEnv(render_mode=None)   # turn off built-in render
+        env = RocketLandingEnv(render_mode=None)   # env controls updates, viewer renders
         obs, _ = env.reset()
 
-        # norm obs if needed
+        # Normalize obs if VecNormalize is active
         if isinstance(self.vec_env_ref, VecNormalize):
             obs = self.vec_env_ref.normalize_obs(obs)
 
-        viewer = Viewer(env.model, env.data)
+        # Launch viewer window
+        with mujoco.viewer.launch_passive(env.model, env.data) as viewer:
 
-        for _ in range(600):
-            action, _ = self.model.predict(obs, deterministic=True)
-            obs, reward, terminated, truncated, info = env.step(action)
+            for _ in range(600):
+                action, _ = self.model.predict(obs, deterministic=True)
+                obs, reward, terminated, truncated, info = env.step(action)
 
-            viewer.render()  # <--- NEW viewer API
+                # Viewer renders current env state
+                viewer.sync()
+                time.sleep(0.01)
 
-            time.sleep(0.01)
+                if terminated or truncated:
+                    break
 
-            if terminated or truncated:
-                break
-
-        viewer.close()
         env.close()
+
 
 
 
