@@ -39,7 +39,7 @@ class RocketLandingEnv(gym.Env):
 
         # Physics Constants
         self.DRY_MASS = self.model.body_mass[self.rocket_bid]
-        self.START_FUEL = 10.0
+        self.START_FUEL = 100.0
         self.ISP = 250.0
         self.G0 = 9.81
         self.DT = self.model.opt.timestep
@@ -63,14 +63,14 @@ class RocketLandingEnv(gym.Env):
         # REVISED: Only Position, Velocity (Linear), and Tilt
         self.curriculum_params = {
             # Position
-            "initial_altitude":     (5.0, 6.0),   # Start low, go high
+            "initial_altitude":     (5.0, 10.0),   # Start low, go high
             "lateral_offset":       (0.0, 5.0),   # Start center, go wide
             
             # Velocity (New: Random linear kicks in any direction)
             "initial_velocity_std": (0.0, 8.0),    # m/s variance
             
             # Orientation
-            "initial_tilt_deg":     (0.0, 60.0),   # Up to 60 degrees tilt
+            "initial_tilt_deg":     (0.0, 90.0),   # Up to 90 degrees tilt
         }
         
         self.success_history = []
