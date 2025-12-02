@@ -215,7 +215,7 @@ class RocketLandingEnv(gym.Env):
             terminated = True
 
         # 2. Ground Interaction Logic
-        if m["z"] < 0.3: 
+        if m["z"] < 0.5: 
             # Case A: Landed far from target -> Immediate Failure
             if m["lateral_dist"] > self.LANDING_TOLERANCE:
                 terminated = True
