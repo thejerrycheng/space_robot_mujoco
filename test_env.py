@@ -212,7 +212,7 @@ def test_env(env_name, episodes=5):
     print(f"\n{Col.BOLD}🚀 Testing Environment: {env_name} ({EnvClass.__module__}){Col.RESET}")
     
     # Force Gravity Check
-    env.model.opt.gravity[:] = [0, 0, -9.81]
+    env.model.opt.gravity[:] = [0, 0, -1.64]
 
     all_histories = []
 

@@ -20,21 +20,26 @@
   </default>
 
   <asset>
-    <texture name="grid" type="2d" builtin="checker"
-             rgb1="0.9 0.9 0.9" rgb2="0.7 0.7 0.7"
-             width="600" height="600"/>
-    <material name="grid" texture="grid" texrepeat="10 10" reflectance="0.1"/>
+      <texture type="skybox" builtin="gradient" rgb1="0.3 0.5 0.7" rgb2="0 0 0" width="512" height="3072"/>
+      <texture type="2d" name="groundplane" builtin="checker" mark="edge" rgb1="0.9 0.9 0.9" rgb2="0.7 0.7 0.7" 
+            markrgb="0.8 0.8 0.8" width="300" height="300"/>
+      <material name="groundplane" texture="groundplane" texuniform="true" texrepeat="5 5" reflectance="0.2"/>
+    <!-- <texture name="grid" type="2d" builtin="checker" -->
+             <!-- rgb1="0.9 0.9 0.9" rgb2="0.7 0.7 0.7" -->
+             <!-- width="600" height="600"/> -->
+    <!-- <material name="grid" texture="grid" texrepeat="10 10" reflectance="0.1"/> -->
     <mesh name="tintin_rocket" file="../meshes/tintin_rocket_new.obj" 
           scale="0.5 0.5 0.5"/>
     <material name="target_ring" rgba="0.2 0.8 0.2 0.8" reflectance="0.2"/>
   </asset>
+  
 
   <worldbody>
 
     <!-- ground plane -->
     <geom name="ground" type="plane"
           size="10 10 0.1"
-          material="grid"
+          material="groundplane"
           rgba="1 1 1 1"/>
 
     <!-- ============================== -->
