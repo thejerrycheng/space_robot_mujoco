@@ -1,31 +1,20 @@
-import os
-import sys
-import time
-import argparse
 import numpy as np
-import subprocess
-import csv
-import matplotlib
-
-# CRITICAL FIX: Use 'Agg' backend to prevent macOS main-thread crashes
-matplotlib.use('Agg') 
-
-import matplotlib.pyplot as plt
-from mpl_toolkits.mplot3d import Axes3D
-
-from stable_baselines3 import PPO
-from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
-from rocket_env.rocket_landing_env import RocketLandingEnv
+import time
+import sys
+import os
+import argparse
+import importlib
+import mujoco
 
 # ================================================================
-#   UTILITIES: COLORS & DASHBOARD
+#   UTILITIES: COLORS & MATH
 # ================================================================
 class Col:
     RESET = '\033[0m'
-    CYAN = '\033[96m'   # State
-    YELLOW = '\033[93m' # Control
-    GREEN = '\033[92m'  # Success
-    RED = '\033[91m'    # Failure
+    CYAN = '\033[96m'   # For Physics State
+    YELLOW = '\033[93m' # For Controls
+    GREEN = '\033[92m'  # For Success/Reward
+    RED = '\033[91m'    # For Crash
     BOLD = '\033[1m'
 
 def quat_to_euler(quat):
@@ -46,325 +35,272 @@ def quat_to_euler(quat):
     yaw = np.arctan2(siny_cosp, cosy_cosp)
     return np.degrees(np.array([roll, pitch, yaw]))
 
-# ================================================================
-#   FILE & PLOTTING FUNCTIONS
-# ================================================================
-def open_file(path):
-    """ Cross-platform file opener """
+def open_file(filename):
+    """ Cross-platform file opener helper. """
+    import subprocess
     try:
-        if sys.platform == "darwin":  # macOS
-            subprocess.call(["open", path])
-        elif sys.platform == "win32": # Windows
-            os.startfile(path)
-        else: # Linux
-            subprocess.call(["xdg-open", path])
-    except Exception:
-        pass
+        if sys.platform == "win32": os.startfile(filename)
+        elif sys.platform == "darwin": subprocess.call(["open", filename])
+        else: subprocess.call(["xdg-open", filename])
+    except Exception as e:
+        print(f"Could not open file automatically: {e}")
 
-def save_to_csv(history, episode_num, save_dir):
-    """ Saves episode trajectory data to a CSV file. """
-    filename = os.path.join(save_dir, f"episode_{episode_num}.csv")
-    
-    # Extract data
-    times = history['time']
-    pos = np.array(history['pos'])
-    att = np.array(history['attitude'])
-    thrust = np.array(history['thrust'])
-    gimbal = np.array(history['gimbal'])
-    mass = np.array(history['mass'])
-    rewards = np.array(history['reward'])
-    
-    with open(filename, mode='w', newline='') as file:
-        writer = csv.writer(file)
-        # Header
-        writer.writerow([
-            "Step", "Time", "X", "Y", "Z", 
-            "Roll", "Pitch", "Yaw", 
-            "Thrust", "GimbalYaw", "GimbalPitch", 
-            "Mass", "Reward"
-        ])
-        
-        # Rows
-        for i in range(len(times)):
-            writer.writerow([
-                i, times[i], pos[i,0], pos[i,1], pos[i,2],
-                att[i,0], att[i,1], att[i,2],
-                thrust[i], gimbal[i,0], gimbal[i,1],
-                mass[i], rewards[i]
-            ])
-            
-    print(f"💾 Data saved to: {filename}")
-
-def generate_interactive_plot(all_histories, save_dir):
+# ================================================================
+#   INTERACTIVE PLOTTING (PLOTLY)
+# ================================================================
+def generate_interactive_plot(all_histories, save_dir=".", env_name="Rocket Env"):
     """ 
-    Generates an interactive 3D plot using Plotly (HTML).
+    Generates a high-fidelity interactive 3D plot using Plotly.
+    Expects 'all_histories' to be a list of dicts with keys: 'pos', 'vel', 'angle'.
     """
     try:
         import plotly.graph_objects as go
+        import plotly.colors as pc
     except ImportError:
         print(f"\n{Col.YELLOW}⚠️  'plotly' not found. Skipping interactive 3D plot.")
         print(f"   Run 'pip install plotly' to enable this feature.{Col.RESET}")
         return
 
+    print(f"\n{Col.BOLD}📊 Generating Interactive Plotly HTML...{Col.RESET}")
     fig = go.Figure()
+    palette = pc.qualitative.Plotly 
 
     for i, history in enumerate(all_histories):
         pos = np.array(history['pos'])
+        if len(pos) < 2: continue 
+
+        # Extract data for hover tooltips
+        steps = np.arange(len(pos))
+        vel_z = np.array(history['vel'])[:, 2] 
+        tilt = np.degrees(history['angle']) # Convert stored radians to degrees
         
-        # Trajectory Line
+        # Create Hover Text
+        hover_text = [
+            f"Step: {s}<br>Alt: {z:.2f}m<br>Vz: {v:.2f}m/s<br>Tilt: {t:.1f}°"
+            for s, z, v, t in zip(steps, pos[:,2], vel_z, tilt)
+        ]
+
+        color = palette[i % len(palette)]
+
+        # 1. Trajectory Line
         fig.add_trace(go.Scatter3d(
             x=pos[:,0], y=pos[:,1], z=pos[:,2],
             mode='lines',
-            name=f'Episode {i+1}',
-            line=dict(width=4)
+            name=f'Ep {i+1}',
+            text=hover_text,
+            hoverinfo='text',
+            line=dict(width=5, color=color),
+            opacity=0.8
         ))
         
-        # Start Point
+        # 2. Start Point
         fig.add_trace(go.Scatter3d(
             x=[pos[0,0]], y=[pos[0,1]], z=[pos[0,2]],
             mode='markers',
-            marker=dict(size=5, color='green'),
-            name=f'Start Ep{i+1}',
-            showlegend=False
+            marker=dict(size=4, color=color, symbol='circle'),
+            showlegend=False, hoverinfo='skip'
         ))
         
-        # End Point
+        # 3. End Point
         fig.add_trace(go.Scatter3d(
             x=[pos[-1,0]], y=[pos[-1,1]], z=[pos[-1,2]],
             mode='markers',
-            marker=dict(size=5, color='red', symbol='x'),
-            name=f'End Ep{i+1}',
-            showlegend=False
+            marker=dict(size=6, color=color, symbol='x'),
+            showlegend=False, hoverinfo='skip'
         ))
 
-    # Target Marker
+    # --- ENVIRONMENT CONTEXT ---
+    # Landing Pad (1m radius circle)
+    theta = np.linspace(0, 2*np.pi, 50)
+    r_pad = 1.0
+    fig.add_trace(go.Scatter3d(
+        x=r_pad * np.cos(theta), y=r_pad * np.sin(theta), z=np.zeros_like(theta),
+        mode='lines',
+        line=dict(color='black', width=4, dash='dash'),
+        name='Landing Pad (1m)'
+    ))
+    
+    # Center Point
     fig.add_trace(go.Scatter3d(
         x=[0], y=[0], z=[0],
         mode='markers',
-        marker=dict(size=8, color='black', symbol='diamond'),
+        marker=dict(size=5, color='black', symbol='diamond'),
         name='Target'
     ))
 
+    # Layout Config
     fig.update_layout(
-        title="Interactive Rocket Trajectories (3D)",
+        title=f"🚀 {env_name} Trajectory Analysis",
+        width=1200, height=800,
         scene=dict(
-            xaxis_title='X Position (m)',
-            yaxis_title='Y Position (m)',
-            zaxis_title='Altitude (m)',
-            aspectmode='data' # Keeps 1:1 scale ratios
+            xaxis_title='X (Lateral)',
+            yaxis_title='Y (Lateral)',
+            zaxis_title='Z (Altitude)',
+            aspectmode='data', # CRITICAL: Keeps physics scale 1:1
+            xaxis=dict(gridcolor='lightgrey', backgroundcolor="white"),
+            yaxis=dict(gridcolor='lightgrey', backgroundcolor="white"),
+            zaxis=dict(gridcolor='grey', backgroundcolor="#F0F0F0"),
         ),
-        margin=dict(l=0, r=0, b=0, t=40)
+        margin=dict(l=0, r=0, b=0, t=50),
+        legend=dict(yanchor="top", y=0.9, xanchor="left", x=0.05)
     )
 
-    filename = os.path.join(save_dir, "interactive_trajectories.html")
+    filename = f"interactive_trajectories_{env_name}.html"
     fig.write_html(filename)
-    print(f"\n{Col.BOLD}🌎 Interactive 3D Plot saved to: {filename}{Col.RESET}")
+    
+    print(f"{Col.BOLD}🌎 Plot Saved: {Col.CYAN}{filename}{Col.RESET}")
     open_file(filename)
 
-def plot_static_analysis(history, episode_num, save_dir):
-    """ Generates static matplotlib dashboard for specific episode stats. """
-    times = np.array(history['time'])
-    pos = np.array(history['pos'])
-    att = np.array(history['attitude'])
-    thrust = np.array(history['thrust'])
-    gimbal = np.array(history['gimbal'])
-    mass = np.array(history['mass'])
-    
-    fig = plt.figure(figsize=(18, 10))
-    fig.suptitle(f"PPO Analysis - Episode {episode_num}", fontsize=16)
+# ================================================================
+#   DYNAMIC ENV LOADER
+# ================================================================
+def get_env_class(env_name):
+    """ Dynamically imports the RocketLandingEnv class. """
+    env_map = {
+        "default": "runs.rocket_landing_env",
+        "env2":    "runs.rocket_landing_env_2",
+        "env3":    "runs.rocket_landing_env_3",
+        "simple":  "runs.rocket_landing_env_simple",
+        "new":     "runs.rocket_landing_env_new",
+    }
 
-    # 1. 3D Trajectory (Static)
-    ax3d = fig.add_subplot(2, 3, 1, projection='3d')
-    ax3d.set_title("3D Trajectory")
-    ax3d.plot(pos[:, 0], pos[:, 1], pos[:, 2], label='Trajectory', color='b')
-    ax3d.scatter(0, 0, 0, color='k', marker='*', s=100, label='Target')
-    ax3d.set_xlabel('X'); ax3d.set_ylabel('Y'); ax3d.set_zlabel('Z')
-    ax3d.legend()
+    if env_name not in env_map:
+        print(f"{Col.RED}Error: Unknown environment '{env_name}'. Available: {list(env_map.keys())}{Col.RESET}")
+        sys.exit(1)
 
-    # 2. Position
-    ax_pos = fig.add_subplot(2, 3, 2)
-    ax_pos.set_title("Position")
-    ax_pos.plot(times, pos[:, 2], label='Z (Alt)', color='green')
-    ax_pos.plot(times, np.sqrt(pos[:,0]**2 + pos[:,1]**2), label='Lateral Error', color='orange', linestyle='--')
-    ax_pos.set_ylabel("m"); ax_pos.legend(); ax_pos.grid(True)
+    module_path = env_map[env_name]
+    try:
+        module = importlib.import_module(module_path)
+        return getattr(module, "RocketLandingEnv")
+    except ImportError as e:
+        print(f"{Col.RED}Error importing {module_path}: {e}{Col.RESET}")
+        sys.exit(1)
+    except AttributeError:
+        print(f"{Col.RED}Error: 'RocketLandingEnv' class not found in {module_path}{Col.RESET}")
+        sys.exit(1)
 
-    # 3. Orientation
-    ax_att = fig.add_subplot(2, 3, 3)
-    ax_att.set_title("Orientation (Tilt)")
-    ax_att.plot(times, att[:, 1], label='Pitch')
-    ax_att.plot(times, att[:, 2], label='Yaw')
-    ax_att.set_ylabel("Deg"); ax_att.legend(); ax_att.grid(True)
+def randomize_initial_state(env):
+    """ Applies randomization to the environment. """
+    # Position
+    env.data.qpos[env.qpos_adr : env.qpos_adr+3] = [
+        np.random.uniform(-2, 2), np.random.uniform(-2, 2), np.random.uniform(10, 15)
+    ]
+    # Orientation (Max 30 deg tilt)
+    tilt = np.deg2rad(np.random.uniform(0, 30))
+    axis = np.random.randn(3); axis[2]=0; axis/=np.linalg.norm(axis)
+    env.data.qpos[env.qpos_adr+3 : env.qpos_adr+7] = [
+        np.cos(tilt/2), axis[0]*np.sin(tilt/2), axis[1]*np.sin(tilt/2), 0
+    ]
+    # Velocity
+    env.data.qvel[env.qvel_adr : env.qvel_adr+3] = [
+        np.random.uniform(-2, 2), np.random.uniform(-2, 2), np.random.uniform(-5, -1)
+    ]
 
-    # 4. Thrust
-    ax_thr = fig.add_subplot(2, 3, 4)
-    ax_thr.set_title("Thrust")
-    ax_thr.plot(times, thrust, color='r')
-    ax_thr.set_ylabel("N"); ax_thr.grid(True)
-
-    # 5. Gimbal
-    ax_gim = fig.add_subplot(2, 3, 5)
-    ax_gim.set_title("Gimbal")
-    ax_gim.plot(times, gimbal[:, 0], label='Yaw')
-    ax_gim.plot(times, gimbal[:, 1], label='Pitch')
-    ax_gim.set_ylabel("Deg"); ax_gim.legend(); ax_gim.grid(True)
-
-    # 6. Mass
-    ax_mass = fig.add_subplot(2, 3, 6)
-    ax_mass.set_title("Mass")
-    ax_mass.plot(times, mass, color='black')
-    ax_mass.set_ylabel("kg"); ax_mass.grid(True)
-
-    plt.tight_layout()
-    save_path = os.path.join(save_dir, f"episode_{episode_num}_analysis.png")
-    plt.savefig(save_path)
-    plt.close(fig)
+    mujoco.mj_forward(env.model, env.data)
 
 # ================================================================
-#   MAIN TESTING LOGIC
+#   MAIN LOOP
 # ================================================================
-def normalize_obs(obs, obs_rms, epsilon=1e-8):
-    """ Manually normalize observation using stats from training. """
-    return np.clip((obs - obs_rms.mean) / np.sqrt(obs_rms.var + epsilon), -10, 10)
-
-def main():
-    parser = argparse.ArgumentParser(description="Test a trained PPO Rocket Agent")
-    parser.add_argument("run_path", type=str, help="Path to the run folder (e.g., runs/ppo_rocket_...)")
-    parser.add_argument("--model", type=str, default="best", choices=["best", "final", "latest"], help="Which model to load")
-    parser.add_argument("--episodes", type=int, default=5, help="Number of test episodes")
-    parser.add_argument("--no-render", action="store_true", help="Disable rendering")
-    args = parser.parse_args()
-
-    # 1. Setup Directories
-    if not os.path.exists(args.run_path):
-        print(f"{Col.RED}Error: Run directory not found.{Col.RESET}")
-        return
-
-    data_dir = os.path.join("data", "ppo")
-    os.makedirs(data_dir, exist_ok=True)
-    print(f"{Col.BOLD}📂 Saving data to: {data_dir}{Col.RESET}")
-
-    # 2. Load Normalization Statistics
-    norm_path = os.path.join(args.run_path, "vec_normalize.pkl")
-    if not os.path.exists(norm_path):
-        print(f"{Col.RED}Error: vec_normalize.pkl not found.{Col.RESET}"); return
-
-    # We load VecNormalize just to extract the stats (mean/var)
-    # We will NOT use this wrapper for the environment loop to prevent auto-resets
-    dummy_env = DummyVecEnv([lambda: RocketLandingEnv()])
-    vec_norm = VecNormalize.load(norm_path, dummy_env)
-    obs_rms = vec_norm.obs_rms
+def test_env(env_name, episodes=5):
+    # 1. Load the correct environment class
+    EnvClass = get_env_class(env_name)
+    env = EnvClass(render_mode="human")
     
-    # 3. Locate & Load Model
-    if args.model == "best": model_file = "best_model/best_model.zip"
-    elif args.model == "final": model_file = "final_model.zip"
-    else: 
-        ckpts = os.listdir(os.path.join(args.run_path, "checkpoints"))
-        model_file = f"checkpoints/{sorted(ckpts)[-1]}"
+    print(f"\n{Col.BOLD}🚀 Testing Environment: {env_name} ({EnvClass.__module__}){Col.RESET}")
     
-    model_path = os.path.join(args.run_path, model_file)
-    print(f"{Col.BOLD}🚀 Loading Model: {model_path}{Col.RESET}")
-    
-    model = PPO.load(model_path)
-
-    # 4. Create RAW Environment (No Auto-Reset Wrapper)
-    real_env = RocketLandingEnv(render_mode="human" if not args.no_render else None)
+    # Force Gravity Check
+    env.model.opt.gravity[:] = [0, 0, -9.81]
 
     all_histories = []
 
-    for ep in range(args.episodes):
-        print(f"\n{Col.BOLD}▶ EPISODE {ep+1}/{args.episodes}{Col.RESET}")
-        
-        obs, _ = real_env.reset()
-        done = False
-        step = 0
-        total_reward = 0
-        
-        # Capture Initial State (t=0)
-        history = {'time': [], 'pos': [], 'attitude': [], 'thrust': [], 'gimbal': [], 'mass': [], 'reward': []}
+    for ep in range(episodes):
+        print(f"\n{Col.BOLD}▶ EPISODE {ep+1}/{episodes}{Col.RESET}")
+        print("-" * 140)
+        print(f"{'STEP':<5} | {Col.CYAN}{'STATE (Alt/Vel/Tilt/Mass)':<40}{Col.RESET} | "
+              f"{Col.YELLOW}{'CONTROLS (Thrust/Gimbal)':<30}{Col.RESET} | {Col.GREEN}{'REWARD':<10}{Col.RESET}")
 
-        # Log initial state before stepping
-        pos = real_env.data.xpos[real_env.rocket_bid].copy()
-        quat = real_env.data.qpos[real_env.qpos_adr+3 : real_env.qpos_adr+7].copy()
-        roll, pitch, yaw = quat_to_euler(quat)
-        mass = real_env.DRY_MASS + real_env.fuel_mass
+        env.reset()
+        env.render()
         
-        history['time'].append(0)
-        history['pos'].append(pos)
-        history['attitude'].append([roll, pitch, yaw])
-        history['thrust'].append(0.0)
-        history['gimbal'].append([0.0, 0.0])
-        history['mass'].append(mass)
-        history['reward'].append(0.0)
+        randomize_initial_state(env)
+        env.render()
+
+        done = False
+        truncated = False
+        step = 0
         
-        while True:
+        # Store full history for Plotly (Pos, Vel, Angle)
+        episode_history = {'pos': [], 'vel': [], 'angle': []}
+
+        while not (done or truncated):
             step += 1
             
-            # Manual Normalization
-            norm_obs = normalize_obs(obs, obs_rms)
+            # --- 1. NO ACTION (PASSIVE DROP TEST) ---
+            action = np.array([-1.0, 0.0, 0.0]) # Free fall (0 thrust)
+
+            # --- 2. STEP ---
+            obs, reward, done, truncated, info = env.step(action)
+            env.render()
             
-            # Predict
-            action, _ = model.predict(norm_obs, deterministic=True)
-            
-            # Step Raw Env
-            obs, reward, terminated, truncated, info = real_env.step(action)
-            total_reward += reward
-            
-            # --- FETCH DATA (Now includes Terminal State) ---
-            pos = real_env.data.xpos[real_env.rocket_bid].copy()
-            vel = real_env.data.cvel[real_env.rocket_bid][3:].copy()
-            quat = real_env.data.qpos[real_env.qpos_adr+3 : real_env.qpos_adr+7].copy()
+            # --- 3. DATA EXTRACTION ---
+            pos = env.data.qpos[env.qpos_adr : env.qpos_adr+3].copy()
+            vel = env.data.qvel[env.qvel_adr : env.qvel_adr+3].copy()
+            quat = env.data.qpos[env.qpos_adr+3 : env.qpos_adr+7]
             roll, pitch, yaw = quat_to_euler(quat)
-            mass = real_env.DRY_MASS + real_env.fuel_mass
-            thrust_N = real_env.data.ctrl[real_env.thrust_act]
-            g_yaw = np.degrees(real_env.data.ctrl[real_env.yaw_act])
-            g_pit = np.degrees(real_env.data.ctrl[real_env.pitch_act])
             
-            # --- STORE ---
-            history['time'].append(step * real_env.DT)
-            history['pos'].append(pos)
-            history['attitude'].append([roll, pitch, yaw])
-            history['thrust'].append(thrust_N)
-            history['gimbal'].append([g_yaw, g_pit])
-            history['mass'].append(mass)
-            history['reward'].append(reward)
+            # Collect for Plot
+            episode_history['pos'].append(pos)
+            episode_history['vel'].append(vel)
+            episode_history['angle'].append(np.deg2rad(max(abs(pitch), abs(roll))))
 
-            # Dashboard
-            if not args.no_render:
-                real_env.render()
-                state_str = f"Alt:{pos[2]:5.1f}m Vz:{vel[2]:5.1f} Tlt:{max(abs(pitch),abs(roll)):4.1f}°"
-                ctrl_str  = f"Thr:{thrust_N:6.0f}N Gmb:{g_yaw:3.0f}/{g_pit:3.0f}"
-                log_line = (
-                    f"\r{step:04} | {Col.CYAN}{state_str}{Col.RESET} | "
-                    f"{Col.YELLOW}{ctrl_str}{Col.RESET} | {Col.GREEN}Rew:{reward:6.2f}{Col.RESET} \033[K"
-                )
-                sys.stdout.write(log_line)
-                sys.stdout.flush()
-                time.sleep(0.01)
+            # Logging Vars
+            dry_mass = getattr(env, 'DRY_MASS', 1000)
+            fuel_mass = getattr(env, 'fuel_mass', 0)
+            current_mass = dry_mass + fuel_mass
+            
+            thrust_N = env.data.ctrl[env.thrust_act]
+            g_yaw    = np.degrees(env.data.ctrl[env.yaw_act])
+            g_pit    = np.degrees(env.data.ctrl[env.pitch_act])
 
-            # Break AFTER logging the final state
-            if terminated or truncated:
-                break
+            # Format String
+            state_str = (
+                f"Alt:{pos[2]:5.1f}m "
+                f"Vz:{vel[2]:5.1f} "
+                f"Tlt:{max(abs(pitch), abs(roll)):4.1f}° "
+                f"Kg:{current_mass:5.1f}"
+            )
+            ctrl_str = f"Thr:{thrust_N:6.0f}N Gmb:{g_yaw:3.0f}/{g_pit:3.0f}"
 
-        # End of Episode
-        all_histories.append(history)
-        
+            log_line = (
+                f"\r{step:04}  | "
+                f"{Col.CYAN}{state_str}{Col.RESET} | "
+                f"{Col.YELLOW}{ctrl_str}{Col.RESET}     | "
+                f"{Col.GREEN}{reward:6.1f}{Col.RESET} \033[K"
+            )
+
+            sys.stdout.write(log_line)
+            sys.stdout.flush()
+            time.sleep(0.01) 
+
+        all_histories.append(episode_history)
+
+        # Episode Result
+        result_color = Col.GREEN if info.get('success') else Col.RED
         result_msg = "✅ SUCCESS" if info.get('success') else "❌ FAILURE"
-        color = Col.GREEN if info.get('success') else Col.RED
-        print(f"\n{color}>>> {result_msg} | Total Reward: {total_reward:.2f}{Col.RESET}")
+        print(f"\n{result_color}>>> RESULT: {result_msg}{Col.RESET}")
 
-        # 1. Save CSV
-        save_to_csv(history, ep+1, data_dir)
-        
-        # 2. Save Static Analysis Plot
-        plot_static_analysis(history, ep+1, data_dir)
-
-    real_env.close()
-
-    # 3. Generate Interactive Plot (Plotly)
-    print(f"\n{Col.BOLD}📊 Generating Interactive 3D Plot...{Col.RESET}")
-    generate_interactive_plot(all_histories, data_dir)
+    env.close()
     
-    print("\n👋 Testing complete.")
+    # Call the new Plotly function
+    generate_interactive_plot(all_histories, env_name=env_name)
 
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser(description="Test Rocket Landing Environment")
+    parser.add_argument("--env", type=str, default="default", 
+                        choices=["default", "env2", "env3", "simple", "new"],
+                        help="Which environment file to load")
+    parser.add_argument("--episodes", type=int, default=5, help="Number of episodes to run")
+    
+    args = parser.parse_args()
+    
+    test_env(args.env, args.episodes)

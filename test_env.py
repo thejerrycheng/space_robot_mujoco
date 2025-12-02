@@ -5,14 +5,6 @@ import os
 import argparse
 import importlib
 import mujoco
-import matplotlib
-
-# CRITICAL FIX: Use 'Agg' backend to prevent macOS main-thread crashes
-# This must be set BEFORE importing pyplot
-matplotlib.use('Agg')
-
-import matplotlib.pyplot as plt
-from mpl_toolkits.mplot3d import Axes3D
 
 # ================================================================
 #   UTILITIES: COLORS & MATH
@@ -41,78 +33,135 @@ def quat_to_euler(quat):
     siny_cosp = 2 * (w * z + x * y)
     cosy_cosp = 1 - 2 * (y * y + z * z)
     yaw = np.arctan2(siny_cosp, cosy_cosp)
-
     return np.degrees(np.array([roll, pitch, yaw]))
 
-def randomize_initial_state(env):
-    """ Applies randomization to the environment. """
-    # Position
-    env.data.qpos[env.qpos_adr : env.qpos_adr+3] = [
-        np.random.uniform(-2, 2), np.random.uniform(-2, 2), np.random.uniform(10, 15)
-    ]
-    # Orientation (Max 30 deg tilt)
-    tilt = np.deg2rad(np.random.uniform(0, 30))
-    axis = np.random.randn(3); axis[2]=0; axis/=np.linalg.norm(axis)
-    env.data.qpos[env.qpos_adr+3 : env.qpos_adr+7] = [
-        np.cos(tilt/2), axis[0]*np.sin(tilt/2), axis[1]*np.sin(tilt/2), 0
-    ]
-    # Velocity
-    env.data.qvel[env.qvel_adr : env.qvel_adr+3] = [
-        np.random.uniform(-2, 2), np.random.uniform(-2, 2), np.random.uniform(-5, -1)
-    ]
-
-    mujoco.mj_forward(env.model, env.data)
-
-def plot_all_trajectories(trajectories, env_name):
-    """ Plots all collected trajectories in a 3D space and saves to file. """
-    print(f"\n{Col.BOLD}📊 Generating 3D Trajectory Plot...{Col.RESET}")
-    fig = plt.figure(figsize=(10, 8))
-    ax = fig.add_subplot(111, projection='3d')
-    
-    colors = plt.cm.jet(np.linspace(0, 1, len(trajectories)))
-    
-    for i, trajectory in enumerate(trajectories):
-        trajectory = np.array(trajectory)
-        if len(trajectory) > 0:
-            ax.plot(trajectory[:, 0], trajectory[:, 1], trajectory[:, 2], color=colors[i], label=f'Ep {i+1}')
-            # Mark start and end
-            ax.scatter(trajectory[0,0], trajectory[0,1], trajectory[0,2], color='green', marker='o', s=20)
-            ax.scatter(trajectory[-1,0], trajectory[-1,1], trajectory[-1,2], color='red', marker='x', s=30)
-        
-    ax.set_xlabel('X Position')
-    ax.set_ylabel('Y Position')
-    ax.set_zlabel('Z Position (Altitude)')
-    ax.set_title(f'Rocket Trajectories ({env_name})')
-    # ax.legend() # Legend can be crowded with many episodes
-    
-    filename = f"test_trajectories_{env_name}.png"
-    plt.savefig(filename)
-    plt.close(fig)
-    print(f"💾 Plot saved to: {Col.CYAN}{filename}{Col.RESET}")
-    
-    # Try to open the file automatically
+def open_file(filename):
+    """ Cross-platform file opener helper. """
+    import subprocess
     try:
-        if sys.platform == "darwin": subprocess.call(["open", filename])
-        elif sys.platform == "win32": os.startfile(filename)
+        if sys.platform == "win32": os.startfile(filename)
+        elif sys.platform == "darwin": subprocess.call(["open", filename])
         else: subprocess.call(["xdg-open", filename])
-    except: pass
+    except Exception as e:
+        print(f"Could not open file automatically: {e}")
 
-import subprocess
+# ================================================================
+#   INTERACTIVE PLOTTING (PLOTLY)
+# ================================================================
+def generate_interactive_plot(all_histories, save_dir=".", env_name="Rocket Env"):
+    """ 
+    Generates a high-fidelity interactive 3D plot using Plotly.
+    Expects 'all_histories' to be a list of dicts with keys: 'pos', 'vel', 'angle'.
+    """
+    try:
+        import plotly.graph_objects as go
+        import plotly.colors as pc
+    except ImportError:
+        print(f"\n{Col.YELLOW}⚠️  'plotly' not found. Skipping interactive 3D plot.")
+        print(f"   Run 'pip install plotly' to enable this feature.{Col.RESET}")
+        return
+
+    print(f"\n{Col.BOLD}📊 Generating Interactive Plotly HTML...{Col.RESET}")
+    fig = go.Figure()
+    palette = pc.qualitative.Plotly 
+
+    for i, history in enumerate(all_histories):
+        pos = np.array(history['pos'])
+        if len(pos) < 2: continue 
+
+        # Extract data for hover tooltips
+        steps = np.arange(len(pos))
+        vel_z = np.array(history['vel'])[:, 2] 
+        tilt = np.degrees(history['angle']) # Convert stored radians to degrees
+        
+        # Create Hover Text
+        hover_text = [
+            f"Step: {s}<br>Alt: {z:.2f}m<br>Vz: {v:.2f}m/s<br>Tilt: {t:.1f}°"
+            for s, z, v, t in zip(steps, pos[:,2], vel_z, tilt)
+        ]
+
+        color = palette[i % len(palette)]
+
+        # 1. Trajectory Line
+        fig.add_trace(go.Scatter3d(
+            x=pos[:,0], y=pos[:,1], z=pos[:,2],
+            mode='lines',
+            name=f'Ep {i+1}',
+            text=hover_text,
+            hoverinfo='text',
+            line=dict(width=5, color=color),
+            opacity=0.8
+        ))
+        
+        # 2. Start Point
+        fig.add_trace(go.Scatter3d(
+            x=[pos[0,0]], y=[pos[0,1]], z=[pos[0,2]],
+            mode='markers',
+            marker=dict(size=4, color=color, symbol='circle'),
+            showlegend=False, hoverinfo='skip'
+        ))
+        
+        # 3. End Point
+        fig.add_trace(go.Scatter3d(
+            x=[pos[-1,0]], y=[pos[-1,1]], z=[pos[-1,2]],
+            mode='markers',
+            marker=dict(size=6, color=color, symbol='x'),
+            showlegend=False, hoverinfo='skip'
+        ))
+
+    # --- ENVIRONMENT CONTEXT ---
+    # Landing Pad (1m radius circle)
+    theta = np.linspace(0, 2*np.pi, 50)
+    r_pad = 1.0
+    fig.add_trace(go.Scatter3d(
+        x=r_pad * np.cos(theta), y=r_pad * np.sin(theta), z=np.zeros_like(theta),
+        mode='lines',
+        line=dict(color='black', width=4, dash='dash'),
+        name='Landing Pad (1m)'
+    ))
+    
+    # Center Point
+    fig.add_trace(go.Scatter3d(
+        x=[0], y=[0], z=[0],
+        mode='markers',
+        marker=dict(size=5, color='black', symbol='diamond'),
+        name='Target'
+    ))
+
+    # Layout Config
+    fig.update_layout(
+        title=f"🚀 {env_name} Trajectory Analysis",
+        width=1200, height=800,
+        scene=dict(
+            xaxis_title='X (Lateral)',
+            yaxis_title='Y (Lateral)',
+            zaxis_title='Z (Altitude)',
+            aspectmode='data', # CRITICAL: Keeps physics scale 1:1
+            xaxis=dict(gridcolor='lightgrey', backgroundcolor="white"),
+            yaxis=dict(gridcolor='lightgrey', backgroundcolor="white"),
+            zaxis=dict(gridcolor='grey', backgroundcolor="#F0F0F0"),
+        ),
+        margin=dict(l=0, r=0, b=0, t=50),
+        legend=dict(yanchor="top", y=0.9, xanchor="left", x=0.05)
+    )
+
+    filename = f"interactive_trajectories_{env_name}.html"
+    fig.write_html(filename)
+    
+    print(f"{Col.BOLD}🌎 Plot Saved: {Col.CYAN}{filename}{Col.RESET}")
+    open_file(filename)
 
 # ================================================================
 #   DYNAMIC ENV LOADER
 # ================================================================
 def get_env_class(env_name):
-    """
-    Dynamically imports the RocketLandingEnv class from the specified file.
-    """
-    # Map friendly names to module paths
+    """ Dynamically imports the RocketLandingEnv class. """
     env_map = {
         "default": "rocket_env.rocket_landing_env",
         "env2":    "rocket_env.rocket_landing_env_2",
         "env3":    "rocket_env.rocket_landing_env_3",
         "simple":  "rocket_env.rocket_landing_env_simple",
-        "new":  "rocket_env.rocket_landing_env_new",
+        "new":     "rocket_env.rocket_landing_env_new",
     }
 
     if env_name not in env_map:
@@ -130,6 +179,28 @@ def get_env_class(env_name):
         print(f"{Col.RED}Error: 'RocketLandingEnv' class not found in {module_path}{Col.RESET}")
         sys.exit(1)
 
+def randomize_initial_state(env):
+    """ Applies randomization to the environment. """
+    # Position
+    env.data.qpos[env.qpos_adr : env.qpos_adr+3] = [
+        np.random.uniform(-2, 2), np.random.uniform(-2, 2), np.random.uniform(10, 15)
+    ]
+    env.data.qpos[env.qpos_adr : env.qpos_adr+3] = [
+        0, 0, np.random.uniform(10, 15)
+    ]
+    # Orientation (Max 30 deg tilt)
+    tilt = np.deg2rad(np.random.uniform(0, 30))
+    axis = np.random.randn(3); axis[2]=0; axis/=np.linalg.norm(axis)
+    env.data.qpos[env.qpos_adr+3 : env.qpos_adr+7] = [
+        np.cos(tilt/2), axis[0]*np.sin(tilt/2), axis[1]*np.sin(tilt/2), 0
+    ]
+    # Velocity
+    env.data.qvel[env.qvel_adr : env.qvel_adr+3] = [
+        np.random.uniform(-2, 2), np.random.uniform(-2, 2), np.random.uniform(-5, -1)
+    ]
+
+    mujoco.mj_forward(env.model, env.data)
+
 # ================================================================
 #   MAIN LOOP
 # ================================================================
@@ -139,8 +210,11 @@ def test_env(env_name, episodes=5):
     env = EnvClass(render_mode="human")
     
     print(f"\n{Col.BOLD}🚀 Testing Environment: {env_name} ({EnvClass.__module__}){Col.RESET}")
+    
+    # Force Gravity Check
+    env.model.opt.gravity[:] = [0, 0, -9.81]
 
-    all_trajectories = []
+    all_histories = []
 
     for ep in range(episodes):
         print(f"\n{Col.BOLD}▶ EPISODE {ep+1}/{episodes}{Col.RESET}")
@@ -151,14 +225,15 @@ def test_env(env_name, episodes=5):
         env.reset()
         env.render()
         
-        # Apply extra randomization if desired (optional)
         randomize_initial_state(env)
         env.render()
 
         done = False
         truncated = False
         step = 0
-        episode_trajectory = []
+        
+        # Store full history for Plotly (Pos, Vel, Angle)
+        episode_history = {'pos': [], 'vel': [], 'angle': []}
 
         while not (done or truncated):
             step += 1
@@ -170,18 +245,25 @@ def test_env(env_name, episodes=5):
             obs, reward, done, truncated, info = env.step(action)
             env.render()
             
-            # --- 3. LOGGING ---
-            pos = env.data.xpos[env.rocket_bid]
-            vel = env.data.cvel[env.rocket_bid][3:]
+            # --- 3. DATA EXTRACTION ---
+            pos = env.data.qpos[env.qpos_adr : env.qpos_adr+3].copy()
+            vel = env.data.qvel[env.qvel_adr : env.qvel_adr+3].copy()
             quat = env.data.qpos[env.qpos_adr+3 : env.qpos_adr+7]
             roll, pitch, yaw = quat_to_euler(quat)
-            current_mass = env.DRY_MASS + env.fuel_mass
+            
+            # Collect for Plot
+            episode_history['pos'].append(pos)
+            episode_history['vel'].append(vel)
+            episode_history['angle'].append(np.deg2rad(max(abs(pitch), abs(roll))))
+
+            # Logging Vars
+            dry_mass = getattr(env, 'DRY_MASS', 1000)
+            fuel_mass = getattr(env, 'fuel_mass', 0)
+            current_mass = dry_mass + fuel_mass
+            
             thrust_N = env.data.ctrl[env.thrust_act]
             g_yaw    = np.degrees(env.data.ctrl[env.yaw_act])
             g_pit    = np.degrees(env.data.ctrl[env.pitch_act])
-
-            # Collect trajectory data
-            episode_trajectory.append(pos.copy())
 
             # Format String
             state_str = (
@@ -203,7 +285,7 @@ def test_env(env_name, episodes=5):
             sys.stdout.flush()
             time.sleep(0.01) 
 
-        all_trajectories.append(episode_trajectory)
+        all_histories.append(episode_history)
 
         # Episode Result
         result_color = Col.GREEN if info.get('success') else Col.RED
@@ -212,8 +294,8 @@ def test_env(env_name, episodes=5):
 
     env.close()
     
-    # Plotting
-    plot_all_trajectories(all_trajectories, env_name)
+    # Call the new Plotly function
+    generate_interactive_plot(all_histories, env_name=env_name)
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Test Rocket Landing Environment")

@@ -63,14 +63,14 @@ class RocketLandingEnv(gym.Env):
         # REVISED: Only Position, Velocity (Linear), and Tilt
         self.curriculum_params = {
             # Position
-            "initial_altitude":     (5.0, 35.0),   # Start low, go high
-            "lateral_offset":       (0.0, 15.0),   # Start center, go wide
+            "initial_altitude":     (10.0, 15.0),   # Start low, go high
+            "lateral_offset":       (0.0, 2.0),   # Start center, go wide
             
             # Velocity (New: Random linear kicks in any direction)
-            "initial_velocity_std": (0.0, 8.0),    # m/s variance
+            "initial_velocity_std": (0.0, 1.0),    # m/s variance
             
             # Orientation
-            "initial_tilt_deg":     (0.0, 60.0),   # Up to 60 degrees tilt
+            "initial_tilt_deg":     (0.0, 10.0),   # Up to 60 degrees tilt
         }
         
         self.success_history = []
@@ -212,7 +212,7 @@ class RocketLandingEnv(gym.Env):
         success = False
 
         # 1. Crash (Ground Hit)
-        if m["z"] < 0.1:
+        if m["z"] < 0.5:
             terminated = True
         
         # 2. Out of Bounds
