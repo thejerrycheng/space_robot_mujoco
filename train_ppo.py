@@ -137,7 +137,7 @@ def train_ppo():
     # Increased to 5M steps to account for the 45-level curriculum
     total_timesteps = 5_000_000
     print(f"\n🚀 Starting PPO Training: {run_name}")
-    print(f"   Curriculum Levels: 45")
+    print(f"   Curriculum Levels: 5")
     print(f"📂 Logging to: {log_dir}\n")
 
     try:
