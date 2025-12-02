@@ -112,6 +112,7 @@ def get_env_class(env_name):
         "env2":    "rocket_env.rocket_landing_env_2",
         "env3":    "rocket_env.rocket_landing_env_3",
         "simple":  "rocket_env.rocket_landing_env_simple",
+        "new":  "rocket_env.rocket_landing_env_new",
     }
 
     if env_name not in env_map:
@@ -217,7 +218,7 @@ def test_env(env_name, episodes=5):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Test Rocket Landing Environment")
     parser.add_argument("--env", type=str, default="default", 
-                        choices=["default", "env2", "env3", "simple"],
+                        choices=["default", "env2", "env3", "simple", "new"],
                         help="Which environment file to load")
     parser.add_argument("--episodes", type=int, default=5, help="Number of episodes to run")
     
