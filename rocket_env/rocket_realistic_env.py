@@ -26,7 +26,6 @@ class RocketLandingEnv(gym.Env):
         self.data = mujoco.MjData(self.model)
         
         # --- GRAVITY: MOON ---
-        # Moon gravity is approx 1.62 m/s^2
         MOON_G = 1.62
         self.model.opt.gravity[:] = [0, 0, -MOON_G]
 
@@ -42,59 +41,50 @@ class RocketLandingEnv(gym.Env):
         self.pitch_act = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_ACTUATOR, "pitch_motor")
         self.thrust_act= mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_ACTUATOR, "thrust")
 
-        # --- PHYSICS CONSTANTS (Sanity Checked) ---
+        # --- PHYSICS CONSTANTS ---
         self.DRY_MASS = self.model.body_mass[self.rocket_bid]
-        
-        # Req: Fuel is 50% of body weight
         self.START_FUEL = 0.5 * self.DRY_MASS 
         TOTAL_MASS = self.DRY_MASS + self.START_FUEL
         
         self.ISP = 250.0
-        self.G0 = 9.81  # Standard gravity for ISP calc
+        self.G0 = 9.81  
         self.DT = self.model.opt.timestep
 
-        # --- CONTROL LIMITS (Dynamic TWR) ---
-        # To make sense, a lander usually needs a TWR (Thrust to Weight Ratio) > 1.0.
-        # A TWR of 5.0 is comfortable for learning (can hover at 20% throttle).
-        # Max Thrust = Mass * Gravity * TWR
+        # --- CONTROL LIMITS (TWR = 5.0) ---
         self.MAX_THRUST = TOTAL_MASS * MOON_G * 5.0
-        
-        # Gimbal range
         self.MAX_GIMBAL = np.deg2rad(20.0)
 
         # Task Constants
         self.TARGET_Z = 0.5
         self.MAX_STEPS = 2000
-        self.MAX_LATERAL_DIST = 40.0
-        self.MAX_VELOCITY = 50.0
+        self.MAX_LATERAL_DIST = 100.0 # Increased: Rocket is flying fast horizontally
+        self.MAX_VELOCITY = 100.0     # Increased: Entry speed is high
 
         # ----------------------------------------------------------------
-        # 3. SPACES & CURRICULUM (Smoother Gradient)
+        # 3. SPACES & CURRICULUM
         # ----------------------------------------------------------------
         self.curriculum_level = 0
-        # Increased to 10 so each step up is a smaller increment
         self.max_curriculum_level = 10
         
         self.curriculum_params = {
-            # Altitude: Start reasonably low, go higher
-            "initial_altitude":     (10.0, 25.0),
+            # Altitude: High enough to allow recovery from the dive
+            "initial_altitude":     (40.0, 40.0),
             
-            # Lateral: Start at 0, but expand to 8m radius (Definitively 3D)
-            # 8m offset is significant enough to require tilting to translate.
-            "lateral_offset":       (0.0, 5.0),
+            # Target Distance: Moves further away
+            "target_distance":      (10.0, 50.0),
             
-            # Velocity: Start stable, add "wind/kick" noise
-            "initial_velocity_std": (0.0, 1.0),
-            
-            # Orientation: Start upright, end with 15 deg tilt
-            # 15 deg is recoverable but requires immediate action.
-            "initial_tilt_deg":     (0.0, 15.0),
+            # Initial Speed (Magnitude along heading):
+            # Level 0: 10 m/s (Manageable dive)
+            # Level 10: 40 m/s (High speed re-entry simulation)
+            "initial_speed":        (5.0, 20.0),
         }
+        
+        # Current target position
+        self.current_target_pos = np.array([0.0, 0.0, self.TARGET_Z])
         
         self.success_history = []
 
-        # Observation and Action spaces
-        obs_high = np.ones(20) * 200
+        obs_high = np.ones(23) * 500
         self.observation_space = spaces.Box(-obs_high, obs_high, dtype=np.float32)
         self.action_space = spaces.Box(low=-1, high=1, shape=(3,), dtype=np.float32)
 
@@ -155,7 +145,8 @@ class RocketLandingEnv(gym.Env):
         info = {
             "success": success,
             "fuel_remaining": self.fuel_mass,
-            **reward_info  # Merges reward components into info for debugging
+            "target_dist": state_metrics["target_dist_3d"],
+            **reward_info 
         }
 
         return obs, reward, terminated, truncated, info
@@ -164,17 +155,15 @@ class RocketLandingEnv(gym.Env):
     # LOGIC: REWARDS
     # =========================================================================
     def _compute_reward(self, m, thrust, terminated, success):
-        """
-        m: dict containing metrics (pos_err, vel_err, tilt, etc.)
-        """
         rewards = {}
         
         # --- A. Shaping / Continuous Rewards ---
-        rewards["dist_pen"] = -1.0 * m["pos_err"]
+        rewards["dist_pen"] = -1.0 * m["target_dist_3d"]
         rewards["vel_pen"]  = -0.05 * m["vel_err"]
         rewards["upright"]  = 1.0 * (m["quat_w"] ** 2)
 
-        target_vec = np.array([0, 0, self.TARGET_Z]) - m["pos"]
+        # Approach Bonus (Vector alignment towards Target)
+        target_vec = self.current_target_pos - m["pos"]
         dist = np.linalg.norm(target_vec)
         if dist > 0.1:
             target_dir = target_vec / dist
@@ -183,6 +172,7 @@ class RocketLandingEnv(gym.Env):
         else:
             rewards["approach"] = 0.0
 
+        # Descent Profile
         desired_vz = -1.0 * max(m["z"] - self.TARGET_Z, 0.0)
         desired_vz = np.clip(desired_vz, -10.0, -0.5)
         rewards["descent"] = 1.0 * np.exp(-0.5 * abs(m["vz"] - desired_vz))
@@ -196,18 +186,15 @@ class RocketLandingEnv(gym.Env):
         if terminated:
             if success:
                 rewards["terminal"] = 500.0
-                print("🌟 SUCCESS LANDING!")
-            elif m["z"] < 0.1:  # Ground crash
+                print(f"🌟 SUCCESS! Target: {self.current_target_pos[:2]}")
+            elif m["z"] < 0.1:
                 rewards["terminal"] = -100.0
-            elif m["lateral_dist"] > self.MAX_LATERAL_DIST:  # Out of bounds
+            elif m["lateral_dist_from_target"] > self.MAX_LATERAL_DIST:
                 rewards["terminal"] = -50.0
-            elif m["vel_err"] > self.MAX_VELOCITY:  # Too fast
+            elif m["vel_err"] > self.MAX_VELOCITY:
                 rewards["terminal"] = -50.0
 
-        # --- MODIFICATION: REMOVE SURVIVAL BONUS ---
-        # Sum total (Removed the + 0.1 constant)
         total_reward = sum(rewards.values())
-
         return total_reward, rewards
 
     # =========================================================================
@@ -218,28 +205,23 @@ class RocketLandingEnv(gym.Env):
         truncated = False
         success = False
 
-        # 1. Crash (Ground Hit)
         if m["z"] < 0.5:
             terminated = True
         
-        # 2. Out of Bounds
-        if m["lateral_dist"] > self.MAX_LATERAL_DIST:
+        if m["lateral_dist_from_target"] > self.MAX_LATERAL_DIST:
             terminated = True
             
-        # 3. Unstable / Too Fast
         if m["vel_err"] > self.MAX_VELOCITY:
             terminated = True
 
-        # 4. Success Conditions
-        # Low height, close to center, slow speed, upright
+        # Success Conditions
         if (0.0 < m["z"] < 1.0 and 
-            m["pos_err"] < 0.5 and 
+            m["target_dist_2d"] < 0.5 and
             m["vel_err"] < 0.5 and 
             m["tilt"] < 0.05):
             success = True
             terminated = True
 
-        # 5. Time Limit
         if self.step_count >= self.MAX_STEPS:
             truncated = True
 
@@ -252,113 +234,126 @@ class RocketLandingEnv(gym.Env):
         super().reset(seed=seed)
         self.step_count = 0
         
-        # 1. Reset Physics
         mujoco.mj_resetData(self.model, self.data)
         self._apply_curriculum_reset()
         
-        # 2. Reset Parameters
         self.fuel_mass = self.START_FUEL
         self.model.body_mass[self.rocket_bid] = self.DRY_MASS + self.START_FUEL
         self.model.body_inertia[self.rocket_bid] = self.orig_inertia.copy()
         
         mujoco.mj_forward(self.model, self.data)
 
-        # 3. Viewer Sync (Do not close!)
         if self.viewer is not None:
             self.viewer.sync()
 
         return self._get_obs(), {}
 
     def render(self):
-        if self.render_mode != "human":
-            return
-
+        if self.render_mode != "human": return
         if self.viewer is None:
-            # Launch viewer in passive mode (runs on separate thread)
             self.viewer = mujoco.viewer.launch_passive(self.model, self.data)
-
-        try:
-            self.viewer.sync()
-        except Exception:
-            pass
-
+        try: self.viewer.sync()
+        except Exception: pass
+    
     def close(self):
         if self.viewer is not None:
             self.viewer.close()
             self.viewer = None
 
     # =========================================================================
-    # UTILITIES
+    # UTILITIES: CURRICULUM & RESET LOGIC
     # =========================================================================
     def _apply_curriculum_reset(self):
-        # 1. Retrieve current difficulty values
-        alt      = self._curriculum_interp("initial_altitude")
-        offset   = self._curriculum_interp("lateral_offset")
-        tilt_max = self._curriculum_interp("initial_tilt_deg")
-        vel_std  = self._curriculum_interp("initial_velocity_std")
+        # 1. Retrieve curriculum values
+        alt = self._curriculum_interp("initial_altitude")
+        speed_mag = self._curriculum_interp("initial_speed")
+        target_dist = self._curriculum_interp("target_distance")
 
-        # -----------------------------------------------------------
-        # A. POSITION (Altitude + Lateral Offset)
-        # -----------------------------------------------------------
-        # Randomize X/Y within the allowable lateral offset circle
-        r = np.sqrt(np.random.uniform(0, offset**2))
-        theta = np.random.uniform(0, 2*np.pi)
-        x = r * np.cos(theta)
-        y = r * np.sin(theta)
-        z = alt
+        # 2. TARGET POSITION
+        # Place target somewhere in a circle around (0,0)
+        theta_target = np.random.uniform(0, 2*np.pi)
+        tx = target_dist * np.cos(theta_target)
+        ty = target_dist * np.sin(theta_target)
+        self.current_target_pos = np.array([tx, ty, self.TARGET_Z])
+
+        # 3. ROCKET POSITION
+        # Rocket always starts at (0,0, alt)
+        self.data.qpos[self.qpos_adr : self.qpos_adr+3] = [0, 0, alt]
+
+        # 4. ORIENTATION (90 deg + 10 deg down = 100 deg from Vertical)
+        # We need to rotate around a random horizontal axis to point the nose
+        # 10 degrees below the horizon.
         
-        self.data.qpos[self.qpos_adr : self.qpos_adr+3] = [x, y, z]
-
-        # -----------------------------------------------------------
-        # B. TILT (Random Direction)
-        # -----------------------------------------------------------
-        if tilt_max > 0:
-            # Pick a random magnitude between 0 and max allowed tilt
-            tilt_deg = np.random.uniform(0, tilt_max)
-            tilt_rad = np.deg2rad(tilt_deg)
-            
-            # Pick a random axis in the XY plane to tilt around
-            # (This ensures "different directions" of tilt)
-            tilt_angle_direction = np.random.uniform(0, 2*np.pi)
-            axis_x = np.cos(tilt_angle_direction)
-            axis_y = np.sin(tilt_angle_direction)
-            
-            # Quaternion for axis-angle rotation
-            # q = [cos(theta/2), ux*sin(theta/2), uy*sin(theta/2), uz*sin(theta/2)]
-            half_angle = tilt_rad / 2
-            q_tilt = np.array([
-                np.cos(half_angle),
-                axis_x * np.sin(half_angle),
-                axis_y * np.sin(half_angle),
-                0.0  # No Z component implies rotation vector is in XY plane
-            ])
-            self.data.qpos[self.qpos_adr+3 : self.qpos_adr+7] = q_tilt
-        else:
-            # Perfectly upright
-            self.data.qpos[self.qpos_adr+3 : self.qpos_adr+7] = [1, 0, 0, 0]
-
-        # -----------------------------------------------------------
-        # C. VELOCITY (Linear Randomness)
-        # -----------------------------------------------------------
-        # Base descent velocity (always falling slightly)
-        base_vz = -2.0 
+        # Total pitch angle from Vertical Z+
+        pitch_angle_deg = 90.0 + 10.0 
+        pitch_angle_rad = np.deg2rad(pitch_angle_deg)
         
-        # Add random noise scaled by curriculum
-        vx = np.random.uniform(-vel_std, vel_std)
-        vy = np.random.uniform(-vel_std, vel_std)
-        vz = np.random.uniform(-vel_std, vel_std) + base_vz
-
-        self.data.qvel[self.qvel_adr : self.qvel_adr+3] = [vx, vy, vz]
+        # Pick a random Yaw direction (0 to 360) so the rocket isn't always flying North
+        yaw_angle = np.random.uniform(0, 2*np.pi)
         
-        # Zero out angular velocity (since we removed it from curriculum)
+        # Combine rotations:
+        # We want the vector (0,0,1) -> rotated by 100 deg -> rotated by Yaw.
+        # This results in a quaternion.
+        
+        # Construct Quat: Pitch (around Y axis) * Yaw (around Z axis)
+        # 1. Pitch Quaternion (Rotation around Y)
+        # q = [cos(a/2), 0, sin(a/2), 0]
+        hp = pitch_angle_rad / 2
+        q_pitch = np.array([np.cos(hp), 0, np.sin(hp), 0])
+        
+        # 2. Yaw Quaternion (Rotation around Z)
+        # q = [cos(a/2), 0, 0, sin(a/2)]
+        hy = yaw_angle / 2
+        q_yaw = np.array([np.cos(hy), 0, 0, np.sin(hy)])
+        
+        # 3. Multiply Quaternions: q_total = q_yaw * q_pitch
+        # (Standard Hamilton product)
+        w1, x1, y1, z1 = q_yaw
+        w2, x2, y2, z2 = q_pitch
+        
+        q_total = np.array([
+            w1*w2 - x1*x2 - y1*y2 - z1*z2,
+            w1*x2 + x1*w2 + y1*z2 - z1*y2,
+            w1*y2 - x1*z2 + y1*w2 + z1*x2,
+            w1*z2 + x1*y2 - y1*x2 + z1*w2
+        ])
+        
+        self.data.qpos[self.qpos_adr+3 : self.qpos_adr+7] = q_total
+
+        # 5. VELOCITY ALIGNMENT
+        # The velocity must be aligned with the nose direction.
+        # Nose direction (Z-local) in World Frame is calculated via spherical coords based on our angles:
+        # Vertical angle = 100 deg. Azimuth = yaw_angle.
+        
+        # Z component = cos(100 deg)
+        # Horizontal component = sin(100 deg)
+        # X = H * cos(yaw)
+        # Y = H * sin(yaw)
+        
+        nz = np.cos(pitch_angle_rad)
+        nh = np.sin(pitch_angle_rad)
+        nx = nh * np.cos(yaw_angle) # Note: yaw in math usually from X axis
+        ny = nh * np.sin(yaw_angle)
+        
+        # Apply Speed Magnitude
+        self.data.qvel[self.qvel_adr : self.qvel_adr+3] = [
+            nx * speed_mag, 
+            ny * speed_mag, 
+            nz * speed_mag
+        ]
+        
+        # Zero angular velocity
         self.data.qvel[self.qvel_adr+3 : self.qvel_adr+6] = [0, 0, 0]
 
     def _get_state_metrics(self):
-        """Pre-calculates all common metrics needed for reward and logic."""
         pos = self._get_pos()
         vel = self._get_vel()
         quat = self._get_quat()
         ang_vel = self._get_ang_vel()
+
+        target_vec = self.current_target_pos - pos
+        target_dist_2d = np.linalg.norm(target_vec[:2])
+        target_dist_3d = np.linalg.norm(target_vec)
 
         return {
             "pos": pos,
@@ -366,8 +361,10 @@ class RocketLandingEnv(gym.Env):
             "z": pos[2],
             "vz": vel[2],
             "quat_w": quat[0],
-            "lateral_dist": np.linalg.norm(pos[:2]),
-            "pos_err": np.linalg.norm([pos[0], pos[1], pos[2] - self.TARGET_Z]),
+            "lateral_dist_from_target": target_dist_2d,
+            "target_dist_2d": target_dist_2d,
+            "target_dist_3d": target_dist_3d,
+            "pos_err": target_dist_3d,
             "vel_err": np.linalg.norm(vel),
             "ang_err": np.linalg.norm(ang_vel),
             "tilt": 1.0 - quat[0]
@@ -375,20 +372,18 @@ class RocketLandingEnv(gym.Env):
 
     # --- Data Accessors ---
     def _get_pos(self): return self.data.xpos[self.rocket_bid].copy()
-    def _get_vel(self):
-        # Convert world vel to body frame if needed, but here we usually want World frame for landing
-        # Note: cvel is usually in body frame. 
-        # For simplicity in this env, we might prefer World Frame linear velocity:
-        return self.data.qvel[self.qvel_adr:self.qvel_adr+3].copy()
-        
+    def _get_vel(self): return self.data.qvel[self.qvel_adr:self.qvel_adr+3].copy()
     def _get_acc(self): return self.data.cacc[self.rocket_bid][3:].copy()
     def _get_quat(self): return self.data.qpos[self.qpos_adr+3 : self.qpos_adr+7].copy()
     def _get_ang_vel(self): return self.data.cvel[self.rocket_bid][:3].copy()
     def _get_ang_acc(self): return self.data.cacc[self.rocket_bid][:3].copy()
 
     def _get_obs(self):
+        pos = self._get_pos()
+        rel_pos = self.current_target_pos - pos
         return np.array([
-            *self._get_pos(),
+            *pos,
+            *rel_pos,
             *self._get_vel(),
             *self._get_acc(),
             *self._get_quat(),
@@ -411,7 +406,7 @@ class RocketLandingEnv(gym.Env):
         if rate > 0.7 and self.curriculum_level < self.max_curriculum_level:
             self.curriculum_level += 1
             print(f"🎯 Level Up: {self.curriculum_level}")
-            self.success_history = [] # Reset history on level up
+            self.success_history = [] 
         elif rate < 0.2 and self.curriculum_level > 0:
             self.curriculum_level -= 1
             print(f"⚠️ Level Down: {self.curriculum_level}")

@@ -162,6 +162,8 @@ def get_env_class(env_name):
         "env3":    "rocket_env.rocket_landing_env_3",
         "simple":  "rocket_env.rocket_landing_env_simple",
         "new":     "rocket_env.rocket_landing_env_new",
+        "real":     "rocket_env.rocket_realistic_env",
+        "default2": "rocket_env.rocket_2_env",
     }
 
     if env_name not in env_map:
@@ -225,7 +227,9 @@ def test_env(env_name, episodes=5):
         env.reset()
         env.render()
         
-        randomize_initial_state(env)
+        ############## Change here if needed ##############
+        # randomize_initial_state(env)
+        ############## Change here if needed ##############
         env.render()
 
         done = False
@@ -300,7 +304,7 @@ def test_env(env_name, episodes=5):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Test Rocket Landing Environment")
     parser.add_argument("--env", type=str, default="default", 
-                        choices=["default", "env2", "env3", "simple", "new"],
+                        choices=["default", "env2", "env3", "simple", "new", "real", "default2"],
                         help="Which environment file to load")
     parser.add_argument("--episodes", type=int, default=5, help="Number of episodes to run")
     
