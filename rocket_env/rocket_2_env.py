@@ -1,11 +1,10 @@
-# rocket_env/rocket_landing_env_fixed.py
-
 import os
 import numpy as np
 import mujoco
 import gymnasium as gym
 from gymnasium import spaces
 import mujoco.viewer
+import importlib
 
 ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 MJCF_PATH = os.path.join(ROOT_DIR, "assets", "mjcf", "tintin_thrust.xml")
@@ -13,8 +12,23 @@ MJCF_PATH = os.path.join(ROOT_DIR, "assets", "mjcf", "tintin_thrust.xml")
 class RocketLandingEnv(gym.Env):
     metadata = {"render_modes": ["human"], "render_fps": 60}
 
-    def __init__(self, render_mode=None):
+    def __init__(self, render_mode=None, reward_func=None):
         super().__init__()
+        
+        # ----------------------------------------------------------------
+        # DYNAMIC REWARD LOADING
+        # ----------------------------------------------------------------
+        # If a function is passed (from training script), use it.
+        # Otherwise, fallback to the default 'flip_and_fuel' for testing/manual runs.
+        if reward_func is not None:
+            self.reward_func = reward_func
+        else:
+            try:
+                mod = importlib.import_module("rocket_env.rewards.flip_and_fuel")
+                self.reward_func = mod.compute_reward
+            except ImportError:
+                print("⚠️  Warning: Could not import default reward 'flip_and_fuel'. Using placeholder.")
+                self.reward_func = lambda env, m, t, term, succ: (0.0, {})
 
         # 1. LOAD MODEL & PHYSICS
         if not os.path.exists(MJCF_PATH):
@@ -51,12 +65,10 @@ class RocketLandingEnv(gym.Env):
         self.MAX_GIMBAL = np.deg2rad(20.0)
 
         # --- TASK CONSTANTS (FIXED) ---
-        self.TARGET_POS_WORLD = np.array([0.0, 0.0, 0.0]) # Target is origin
+        self.TARGET_POS_WORLD = np.array([0.0, 0.0, 0.0])
         self.START_POS_FIXED  = np.array([10.0, 0.0, 10.0])
-        self.INITIAL_SPEED    = 5.0
+        self.INITIAL_SPEED    = 3.0 
         self.PITCH_DOWN_DEG   = 10.0
-        
-        # We need to target a Z height slightly above 0 for the center of mass (landing gear offset)
         self.LANDING_Z = 0.5 
         
         self.MAX_STEPS = 2000
@@ -106,7 +118,9 @@ class RocketLandingEnv(gym.Env):
         obs = self._get_obs()
         state_metrics = self._get_state_metrics()
         terminated, truncated, success = self._check_termination(state_metrics)
-        reward, reward_info = self._compute_reward(state_metrics, thrust_cmd, terminated, success)
+        
+        # --- DELEGATE TO EXTERNAL REWARD FUNCTION ---
+        reward, reward_info = self.reward_func(self, state_metrics, thrust_cmd, terminated, success)
 
         info = {
             "success": success,
@@ -118,52 +132,6 @@ class RocketLandingEnv(gym.Env):
         return obs, reward, terminated, truncated, info
 
     # =========================================================================
-    # LOGIC: REWARDS
-    # =========================================================================
-    def _compute_reward(self, m, thrust, terminated, success):
-        rewards = {}
-        
-        # Shaping
-        rewards["dist_pen"] = -1.0 * m["target_dist_3d"]
-        rewards["vel_pen"]  = -0.05 * m["vel_err"]
-        rewards["upright"]  = 1.0 * (m["quat_w"] ** 2)
-
-        # Approach Bonus
-        # Vector from rocket to target
-        target_vec = self.TARGET_POS_WORLD - m["pos"]
-        dist = np.linalg.norm(target_vec)
-        if dist > 0.1:
-            target_dir = target_vec / dist
-            approach_vel = np.dot(m["vel"], target_dir)
-            rewards["approach"] = 0.5 * approach_vel
-        else:
-            rewards["approach"] = 0.0
-
-        # Descent Profile (Targeting Landing Z)
-        desired_vz = -1.0 * max(m["z"] - self.LANDING_Z, 0.0)
-        desired_vz = np.clip(desired_vz, -10.0, -0.5)
-        rewards["descent"] = 1.0 * np.exp(-0.5 * abs(m["vz"] - desired_vz))
-
-        # Costs
-        rewards["fuel"] = -0.0002 * thrust
-        rewards["spin"] = -0.1 * m["ang_err"]
-
-        # Terminal
-        rewards["terminal"] = 0.0
-        if terminated:
-            if success:
-                rewards["terminal"] = 500.0
-                print(f"🌟 SUCCESS LANDING!")
-            elif m["z"] < 0.1:
-                rewards["terminal"] = -100.0
-            elif m["dist_xy"] > self.MAX_LATERAL_DIST:
-                rewards["terminal"] = -50.0
-            elif m["vel_err"] > self.MAX_VELOCITY:
-                rewards["terminal"] = -50.0
-
-        return sum(rewards.values()), rewards
-
-    # =========================================================================
     # LOGIC: TERMINATION
     # =========================================================================
     def _check_termination(self, m):
@@ -171,7 +139,7 @@ class RocketLandingEnv(gym.Env):
         truncated = False
         success = False
 
-        if m["z"] < 0.5: terminated = True
+        if m["z"] < 0.4: terminated = True
         if m["dist_xy"] > self.MAX_LATERAL_DIST: terminated = True
         if m["vel_err"] > self.MAX_VELOCITY: terminated = True
 
@@ -199,28 +167,19 @@ class RocketLandingEnv(gym.Env):
         self.data.qpos[self.qpos_adr : self.qpos_adr+3] = self.START_POS_FIXED
 
         # 2. CALCULATE HEADING (YAW)
-        # Vector on horizontal plane from Rocket -> Target
         dx = self.TARGET_POS_WORLD[0] - self.START_POS_FIXED[0]
         dy = self.TARGET_POS_WORLD[1] - self.START_POS_FIXED[1]
-        
-        # Azimuth (Yaw) is the angle of this vector
         yaw_angle = np.arctan2(dy, dx)
 
-        # 3. CALCULATE PITCH
-        # 90 degrees (vertical) + 10 degrees down = 100 degrees from Z-up axis
-        pitch_angle_deg = 90.0 + self.PITCH_DOWN_DEG
-        pitch_angle_rad = np.deg2rad(pitch_angle_deg)
+        # 3. CALCULATE PITCH (90 + 10 deg down)
+        pitch_angle_rad = np.deg2rad(90.0 + self.PITCH_DOWN_DEG)
 
-        # 4. CONSTRUCT QUATERNION (Combine Pitch & Yaw)
-        # Rotation 1: Pitch around Y axis
+        # 4. CONSTRUCT QUATERNION
         hp = pitch_angle_rad / 2
-        q_pitch = np.array([np.cos(hp), 0, np.sin(hp), 0])
-        
-        # Rotation 2: Yaw around Z axis
         hy = yaw_angle / 2
+        q_pitch = np.array([np.cos(hp), 0, np.sin(hp), 0])
         q_yaw = np.array([np.cos(hy), 0, 0, np.sin(hy)])
         
-        # q_total = q_yaw * q_pitch
         w1, x1, y1, z1 = q_yaw
         w2, x2, y2, z2 = q_pitch
         q_total = np.array([
@@ -231,17 +190,12 @@ class RocketLandingEnv(gym.Env):
         ])
         self.data.qpos[self.qpos_adr+3 : self.qpos_adr+7] = q_total
 
-        # 5. SET VELOCITY (Aligned with Nose)
-        # Convert angles to unit vector
-        # Z component depends only on pitch
+        # 5. SET VELOCITY
         nz = np.cos(pitch_angle_rad)
-        # Horizontal magnitude depends on pitch
         nh = np.sin(pitch_angle_rad)
-        # X and Y depend on Yaw
         nx = nh * np.cos(yaw_angle)
         ny = nh * np.sin(yaw_angle)
         
-        # Velocity = Direction * Speed
         self.data.qvel[self.qvel_adr : self.qvel_adr+3] = [
             nx * self.INITIAL_SPEED, 
             ny * self.INITIAL_SPEED, 
@@ -249,7 +203,6 @@ class RocketLandingEnv(gym.Env):
         ]
         self.data.qvel[self.qvel_adr+3 : self.qvel_adr+6] = [0, 0, 0]
 
-        # Reset Physics
         self.fuel_mass = self.START_FUEL
         self.model.body_mass[self.rocket_bid] = self.DRY_MASS + self.START_FUEL
         self.model.body_inertia[self.rocket_bid] = self.orig_inertia.copy()
@@ -264,7 +217,6 @@ class RocketLandingEnv(gym.Env):
         quat = self._get_quat()
         ang_vel = self._get_ang_vel()
         
-        # Relative to World Origin Target
         dist_xy = np.linalg.norm(pos[:2])
         dist_3d = np.linalg.norm(pos - self.TARGET_POS_WORLD)
 
@@ -278,10 +230,7 @@ class RocketLandingEnv(gym.Env):
 
     def _get_obs(self):
         pos = self._get_pos()
-        # Relative Pos is vector FROM Rocket TO Target (0,0,0)
-        # So rel_pos = (0,0,0) - pos = -pos
         rel_pos = -1.0 * pos
-        
         return np.array([*pos, *rel_pos, *self._get_vel(), *self._get_acc(), *self._get_quat(), *self._get_ang_vel(), *self._get_ang_acc(), self.fuel_mass], dtype=np.float32)
 
     def render(self):
