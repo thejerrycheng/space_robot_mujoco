@@ -160,7 +160,7 @@ class RocketLandingEnv(gym.Env):
 
         # Success Criteria
         if (0.0 < m["z"] < 1.0 and 
-            m["dist_xy"] < 1 and
+            m["dist_xy"] < 5 and
             m["vel_err"] < 1.0 and 
             m["tilt"] < 0.1): 
             success = True
