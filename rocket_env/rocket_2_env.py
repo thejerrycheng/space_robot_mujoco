@@ -6,6 +6,7 @@ from gymnasium import spaces
 import mujoco.viewer
 import importlib
 
+# Define path relative to this file
 ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 MJCF_PATH = os.path.join(ROOT_DIR, "assets", "mjcf", "tintin_thrust.xml")
 
@@ -18,8 +19,6 @@ class RocketLandingEnv(gym.Env):
         # ----------------------------------------------------------------
         # DYNAMIC REWARD LOADING
         # ----------------------------------------------------------------
-        # If a function is passed (from training script), use it.
-        # Otherwise, fallback to the default 'flip_and_fuel' for testing/manual runs.
         if reward_func is not None:
             self.reward_func = reward_func
         else:
@@ -66,7 +65,7 @@ class RocketLandingEnv(gym.Env):
 
         # --- TASK CONSTANTS (FIXED) ---
         self.TARGET_POS_WORLD = np.array([0.0, 0.0, 0.0])
-        self.START_POS_FIXED  = np.array([10.0, 0.0, 10.0])
+        self.START_POS_FIXED  = np.array([25.0, 0.0, 10.0])
         self.INITIAL_SPEED    = 3.0 
         self.PITCH_DOWN_DEG   = 10.0
         self.LANDING_Z = 0.5 
@@ -119,11 +118,18 @@ class RocketLandingEnv(gym.Env):
         state_metrics = self._get_state_metrics()
         terminated, truncated, success = self._check_termination(state_metrics)
         
+        # --- CALCULATE SEMI-SUCCESS (Fix for KeyError) ---
+        # Semi-Success: In target zone (< 5m horizontal) but not a full success
+        dist_xy = state_metrics["dist_xy"]
+        semi_success = (dist_xy < 5.0) and not success
+
         # --- DELEGATE TO EXTERNAL REWARD FUNCTION ---
         reward, reward_info = self.reward_func(self, state_metrics, thrust_cmd, terminated, success)
 
+        # --- UPDATE INFO DICT (Must include 'semi_success' for Monitor) ---
         info = {
             "success": success,
+            "semi_success": semi_success, # <--- FIXED: Added this key
             "fuel": self.fuel_mass,
             "dist": state_metrics["target_dist_3d"],
             **reward_info 

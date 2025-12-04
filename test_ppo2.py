@@ -7,6 +7,7 @@ import subprocess
 import csv
 import matplotlib
 import importlib
+import mujoco # Added for state modification
 
 # CRITICAL FIX: Use 'Agg' backend to prevent macOS/Linux main-thread rendering crashes
 matplotlib.use('Agg') 
@@ -46,6 +47,15 @@ def quat_to_euler(quat):
     cosy_cosp = 1 - 2 * (y * y + z * z)
     yaw = np.arctan2(siny_cosp, cosy_cosp)
     return np.degrees(np.array([roll, pitch, yaw]))
+
+def get_body_z_axis(quat):
+    """ Calculates the Body Z-axis vector in World coordinates from a quaternion [w,x,y,z]. """
+    w, x, y, z = quat
+    # Formula for the 3rd column of the rotation matrix
+    vec_x = 2 * (w*y + x*z)
+    vec_y = 2 * (y*z - w*x)
+    vec_z = 1 - 2 * (x*x + y*y)
+    return np.array([vec_x, vec_y, vec_z])
 
 # ================================================================
 #   FILE & PLOTTING FUNCTIONS
@@ -120,14 +130,14 @@ def generate_interactive_plot(all_histories, save_dir=".", env_name="Rocket Env"
     for i, history in enumerate(all_histories):
         pos = np.array(history['pos'])
         if len(pos) < 2: continue 
+        
+        # Get quaternions if available (added in main loop)
+        quats = np.array(history.get('quat', []))
 
         # Extract data for hover tooltips
         steps = np.arange(len(pos))
         
-        # FIX 1: Velocity Key
         vel_z = np.array(history['vel'])[:, 2] 
-        
-        # FIX 2: Attitude / Tilt
         att = np.array(history['attitude'])
         tilt = np.maximum(np.abs(att[:,0]), np.abs(att[:,1]))
         
@@ -143,14 +153,38 @@ def generate_interactive_plot(all_histories, save_dir=".", env_name="Rocket Env"
         fig.add_trace(go.Scatter3d(
             x=pos[:,0], y=pos[:,1], z=pos[:,2],
             mode='lines',
-            name=f'Ep {i+1}',
+            name=f'Ep {i+1} Traj',
             text=hover_text,
             hoverinfo='text',
             line=dict(width=5, color=color),
             opacity=0.8
         ))
         
-        # 2. Start Point
+        # 2. Heading Vectors (Cone Plot)
+        # Check if we have quaternion data to calculate headings
+        if len(quats) == len(pos):
+            step_interval = 30 # Plot a cone every 30 steps
+            indices = np.arange(0, len(pos), step_interval)
+            
+            if len(indices) > 0:
+                sub_pos = pos[indices]
+                sub_quats = quats[indices]
+                
+                # Calculate heading vectors
+                headings = np.array([get_body_z_axis(q) for q in sub_quats])
+                
+                fig.add_trace(go.Cone(
+                    x=sub_pos[:, 0], y=sub_pos[:, 1], z=sub_pos[:, 2],
+                    u=headings[:, 0], v=headings[:, 1], w=headings[:, 2],
+                    sizemode="scaled",
+                    sizeref=0.5,
+                    showscale=False,
+                    anchor="tail",
+                    colorscale=[[0, color], [1, color]],
+                    name=f'Ep {i+1} Heading'
+                ))
+        
+        # 3. Start Point
         fig.add_trace(go.Scatter3d(
             x=[pos[0,0]], y=[pos[0,1]], z=[pos[0,2]],
             mode='markers',
@@ -158,7 +192,7 @@ def generate_interactive_plot(all_histories, save_dir=".", env_name="Rocket Env"
             showlegend=False, hoverinfo='skip'
         ))
         
-        # 3. End Point
+        # 4. End Point
         fig.add_trace(go.Scatter3d(
             x=[pos[-1,0]], y=[pos[-1,1]], z=[pos[-1,2]],
             mode='markers',
@@ -175,6 +209,15 @@ def generate_interactive_plot(all_histories, save_dir=".", env_name="Rocket Env"
         mode='lines',
         line=dict(color='black', width=4, dash='dash'),
         name='Landing Pad (1m)'
+    ))
+    
+    # Target Zone (5m radius) for Semi-Success Visual
+    r_zone = 5.0
+    fig.add_trace(go.Scatter3d(
+        x=r_zone * np.cos(theta), y=r_zone * np.sin(theta), z=np.zeros_like(theta),
+        mode='lines',
+        line=dict(color='orange', width=2, dash='dot'),
+        name='Target Zone (5m)'
     ))
     
     # Center Point
@@ -202,7 +245,7 @@ def generate_interactive_plot(all_histories, save_dir=".", env_name="Rocket Env"
         legend=dict(yanchor="top", y=0.9, xanchor="left", x=0.05)
     )
 
-    filename = f"interactive_trajectories_{env_name}.html"
+    filename = os.path.join(save_dir, f"interactive_trajectories_{env_name}.html")
     fig.write_html(filename)
     
     print(f"{Col.BOLD}🌎 Plot Saved: {Col.CYAN}{filename}{Col.RESET}")
@@ -361,12 +404,46 @@ def main():
         print(f"\n{Col.BOLD}▶ EPISODE {ep+1}/{args.episodes}{Col.RESET}")
         
         obs, _ = real_env.reset()
+        
+        # --- CUSTOM RANDOMIZATION START ---
+        # User requested: X pos 20-25m, Vel 3-4 m/s
+        qpos = real_env.data.qpos
+        qvel = real_env.data.qvel
+        
+        # 1. Randomize Position X (index 0)
+        qpos[real_env.qpos_adr] = np.random.uniform(20, 25)
+        
+        # 2. Randomize Velocity (Indices 0:3)
+        vel_mag = np.random.uniform(3, 4)
+        # vel_dir = np.random.randn(3)
+        # vel_dir /= np.linalg.norm(vel_dir) # Unit vector
+        # qvel[real_env.qvel_adr : real_env.qvel_adr+3] = vel_dir * vel_mag
+        
+        # Apply to Physics Engine
+        mujoco.mj_forward(real_env.model, real_env.data)
+        
+        # Important: Refresh observation after state modification
+        # Since standard Gym envs don't always expose this cleanly, we rely on 
+        # internal method or re-check the resulting state in the loop.
+        # However, for PPO prediction, we need the *new* obs.
+        # RocketLandingEnv usually has _get_obs().
+        try:
+            obs = real_env._get_obs()
+        except AttributeError:
+            # Fallback if _get_obs is not available: step with zero action (advances time slightly)
+            # or just proceed (first action might be slightly off)
+            pass
+        # --- CUSTOM RANDOMIZATION END ---
+
         done = False
         step = 0
         total_reward = 0
         
-        # FIX: Added 'vel' to history keys
-        history = {'time': [], 'pos': [], 'vel': [], 'attitude': [], 'thrust': [], 'gimbal': [], 'mass': [], 'reward': []}
+        # FIX: Added 'vel' and 'quat' to history keys
+        history = {
+            'time': [], 'pos': [], 'vel': [], 'attitude': [], 'quat': [], 
+            'thrust': [], 'gimbal': [], 'mass': [], 'reward': []
+        }
 
         # Log initial state
         pos = real_env.data.xpos[real_env.rocket_bid].copy()
@@ -379,6 +456,7 @@ def main():
         history['pos'].append(pos)
         history['vel'].append(vel)
         history['attitude'].append([roll, pitch, yaw])
+        history['quat'].append(quat) # Added raw quat storage
         history['thrust'].append(0.0)
         history['gimbal'].append([0.0, 0.0])
         history['mass'].append(mass)
@@ -406,6 +484,7 @@ def main():
             history['pos'].append(pos)
             history['vel'].append(vel)
             history['attitude'].append([roll, pitch, yaw])
+            history['quat'].append(quat) # Added raw quat storage
             history['thrust'].append(thrust_N)
             history['gimbal'].append([g_yaw, g_pit])
             history['mass'].append(mass)
@@ -429,10 +508,23 @@ def main():
 
         all_histories.append(history)
         
-        success = info.get('success', False)
-        result_msg = "✅ SUCCESS" if success else "❌ FAILURE"
-        color = Col.GREEN if success else Col.RED
-        print(f"\n{color}>>> {result_msg} | Total Reward: {total_reward:.2f}{Col.RESET}")
+        # End of Episode Logging
+        final_pos = history['pos'][-1]
+        dist_xy = np.sqrt(final_pos[0]**2 + final_pos[1]**2)
+        
+        is_success = info.get('success', False)
+        # Semi-Success: purely based on horizontal distance < 5.0m
+        is_semi_success = (dist_xy < 5.0) and not is_success
+
+        result_msg = "❌ FAILURE"
+        if is_success:
+            result_msg = f"{Col.GREEN}✅ SUCCESS{Col.RESET}"
+        elif is_semi_success:
+            result_msg = f"{Col.YELLOW}⚠️ SEMI-SUCCESS (In Zone: {dist_xy:.2f}m){Col.RESET}"
+        else:
+            result_msg = f"{Col.RED}❌ FAILURE (Dist: {dist_xy:.2f}m){Col.RESET}"
+
+        print(f"\n{result_msg} | Total Reward: {total_reward:.2f}")
 
         save_to_csv(history, ep+1, data_dir)
         plot_static_analysis(history, ep+1, data_dir)
