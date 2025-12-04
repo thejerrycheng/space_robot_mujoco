@@ -43,12 +43,12 @@
           rgba="1 1 1 1"/>
 
     <!-- ============================== -->
-    <!-- Landing target ring (radius=0.5) -->
+    <!-- Landing target ring (radius=1) -->
     <!-- ============================== -->
     <geom name="landing_ring"
           type="cylinder"
           pos="0 0 0.001"
-          size="0.5 0.02" 
+          size="1 0.02" 
           rgba="0.2 0.8 0.2 0.8"
           material="target_ring"
           contype="0" conaffinity="0"/>
