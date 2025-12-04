@@ -8,7 +8,7 @@ def calculate_target_velocity(pos, current_vel_mag):
     """
     # 1. SETUP
     # Target is virtual point at 15m (Paper Eq 29c)
-    target_pos = np.array([0.0, 0.0, 15.0]) 
+    target_pos = np.array([0.0, 0.0, 25.0]) 
     
     # Vector FROM lander TO target
     r_to_targ = target_pos - pos
