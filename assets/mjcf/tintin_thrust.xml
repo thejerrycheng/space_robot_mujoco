@@ -1,6 +1,6 @@
 <mujoco model="ball-thrust-universal">
   <compiler angle="degree" coordinate="local"/>
-  <option timestep="0.01" gravity="0 0 -1.64" integrator="RK4"/>
+  <option timestep="0.01" gravity="0 0 -1.62" integrator="RK4"/>
 
   <visual>
     <quality shadowsize="2048"/>

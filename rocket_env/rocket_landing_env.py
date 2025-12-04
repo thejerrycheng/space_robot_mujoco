@@ -24,6 +24,11 @@ class RocketLandingEnv(gym.Env):
 
         self.model = mujoco.MjModel.from_xml_path(MJCF_PATH)
         self.data = mujoco.MjData(self.model)
+        
+        # --- GRAVITY: MOON ---
+        # Moon gravity is approx 1.62 m/s^2
+        MOON_G = 1.62
+        self.model.opt.gravity[:] = [0, 0, -MOON_G]
 
         # ----------------------------------------------------------------
         # 2. IDENTIFIERS & CONSTANTS
@@ -37,45 +42,58 @@ class RocketLandingEnv(gym.Env):
         self.pitch_act = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_ACTUATOR, "pitch_motor")
         self.thrust_act= mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_ACTUATOR, "thrust")
 
-        # Physics Constants
+        # --- PHYSICS CONSTANTS (Sanity Checked) ---
         self.DRY_MASS = self.model.body_mass[self.rocket_bid]
-        self.START_FUEL = 10.0
+        
+        # Req: Fuel is 50% of body weight
+        self.START_FUEL = 0.5 * self.DRY_MASS 
+        TOTAL_MASS = self.DRY_MASS + self.START_FUEL
+        
         self.ISP = 250.0
-        self.G0 = 9.81
+        self.G0 = 9.81  # Standard gravity for ISP calc
         self.DT = self.model.opt.timestep
 
-        # Control Limits
-        self.MAX_THRUST = 2200.0
+        # --- CONTROL LIMITS (Dynamic TWR) ---
+        # To make sense, a lander usually needs a TWR (Thrust to Weight Ratio) > 1.0.
+        # A TWR of 5.0 is comfortable for learning (can hover at 20% throttle).
+        # Max Thrust = Mass * Gravity * TWR
+        self.MAX_THRUST = TOTAL_MASS * MOON_G * 5.0
+        
+        # Gimbal range
         self.MAX_GIMBAL = np.deg2rad(20.0)
 
         # Task Constants
         self.TARGET_Z = 0.5
         self.MAX_STEPS = 2000
-        self.MAX_LATERAL_DIST = 40.0  # Reset if rocket flies this far horizontally
-        self.MAX_VELOCITY = 50.0      # Reset if rocket moves this fast
+        self.MAX_LATERAL_DIST = 40.0
+        self.MAX_VELOCITY = 50.0
 
         # ----------------------------------------------------------------
-        # 3. SPACES & CURRICULUM
+        # 3. SPACES & CURRICULUM (Smoother Gradient)
         # ----------------------------------------------------------------
         self.curriculum_level = 0
-        self.max_curriculum_level = 5
+        # Increased to 10 so each step up is a smaller increment
+        self.max_curriculum_level = 10
         
-        # REVISED: Only Position, Velocity (Linear), and Tilt
         self.curriculum_params = {
-            # Position
-            "initial_altitude":     (10.0, 15.0),   # Start low, go high
-            "lateral_offset":       (0.0, 2.0),   # Start center, go wide
+            # Altitude: Start reasonably low, go higher
+            "initial_altitude":     (10.0, 25.0),
             
-            # Velocity (New: Random linear kicks in any direction)
-            "initial_velocity_std": (0.0, 1.0),    # m/s variance
+            # Lateral: Start at 0, but expand to 8m radius (Definitively 3D)
+            # 8m offset is significant enough to require tilting to translate.
+            "lateral_offset":       (0.0, 5.0),
             
-            # Orientation
-            "initial_tilt_deg":     (0.0, 10.0),   # Up to 60 degrees tilt
+            # Velocity: Start stable, add "wind/kick" noise
+            "initial_velocity_std": (0.0, 1.0),
+            
+            # Orientation: Start upright, end with 15 deg tilt
+            # 15 deg is recoverable but requires immediate action.
+            "initial_tilt_deg":     (0.0, 15.0),
         }
         
         self.success_history = []
 
-        # Observation and Action spaces remain the same...
+        # Observation and Action spaces
         obs_high = np.ones(20) * 200
         self.observation_space = spaces.Box(-obs_high, obs_high, dtype=np.float32)
         self.action_space = spaces.Box(low=-1, high=1, shape=(3,), dtype=np.float32)
@@ -84,10 +102,9 @@ class RocketLandingEnv(gym.Env):
         # 4. STATE INITIALIZATION
         # ----------------------------------------------------------------
         self.fuel_mass = self.START_FUEL
-        self.total_mass = self.DRY_MASS + self.START_FUEL
+        self.total_mass = TOTAL_MASS
         self.orig_inertia = self.model.body_inertia[self.rocket_bid].copy()
         
-        # Rendering
         self.render_mode = render_mode
         self.viewer = None
         self.step_count = 0
@@ -153,17 +170,10 @@ class RocketLandingEnv(gym.Env):
         rewards = {}
         
         # --- A. Shaping / Continuous Rewards ---
-        
-        # 1. Distance & Velocity Penalty (Standard)
         rewards["dist_pen"] = -1.0 * m["pos_err"]
-        rewards["vel_pen"]  = -0.05 * m["vel_err"] # Low penalty to allow movement
-        
-        # 2. Upright Bonus (Dense)
-        # Quat w=1 means upright. w^2 gives a nice curve 0 to 1.
-        rewards["upright"] = 1.0 * (m["quat_w"] ** 2)
+        rewards["vel_pen"]  = -0.05 * m["vel_err"]
+        rewards["upright"]  = 1.0 * (m["quat_w"] ** 2)
 
-        # 3. Approach Bonus (Vector alignment)
-        # Reward velocity pointing towards the target
         target_vec = np.array([0, 0, self.TARGET_Z]) - m["pos"]
         dist = np.linalg.norm(target_vec)
         if dist > 0.1:
@@ -173,14 +183,10 @@ class RocketLandingEnv(gym.Env):
         else:
             rewards["approach"] = 0.0
 
-        # 4. Descent Profile (Glide Slope)
-        # Desired vertical velocity decreases as we get closer to the ground
         desired_vz = -1.0 * max(m["z"] - self.TARGET_Z, 0.0)
         desired_vz = np.clip(desired_vz, -10.0, -0.5)
-        # Reward for matching this velocity
         rewards["descent"] = 1.0 * np.exp(-0.5 * abs(m["vz"] - desired_vz))
 
-        # 5. Action costs
         rewards["fuel"] = -0.0002 * thrust
         rewards["spin"] = -0.1 * m["ang_err"]
 
@@ -189,7 +195,7 @@ class RocketLandingEnv(gym.Env):
         
         if terminated:
             if success:
-                rewards["terminal"] = 300.0
+                rewards["terminal"] = 500.0
                 print("🌟 SUCCESS LANDING!")
             elif m["z"] < 0.1:  # Ground crash
                 rewards["terminal"] = -100.0
@@ -198,8 +204,9 @@ class RocketLandingEnv(gym.Env):
             elif m["vel_err"] > self.MAX_VELOCITY:  # Too fast
                 rewards["terminal"] = -50.0
 
-        # Sum total
-        total_reward = sum(rewards.values()) + 0.1  # +0.1 survival bonus
+        # --- MODIFICATION: REMOVE SURVIVAL BONUS ---
+        # Sum total (Removed the + 0.1 constant)
+        total_reward = sum(rewards.values())
 
         return total_reward, rewards
 
