@@ -52,7 +52,6 @@ class RocketLandingEnv(gym.Env):
 
         # --- PHYSICS CONSTANTS ---
         self.DRY_MASS = self.model.body_mass[self.rocket_bid]
-        # UPDATED: Set Start Fuel to 100% of Dry Mass (was 0.5)
         self.START_FUEL = 1.0 * self.DRY_MASS 
         TOTAL_MASS = self.DRY_MASS + self.START_FUEL
         
@@ -68,16 +67,15 @@ class RocketLandingEnv(gym.Env):
         self.TARGET_POS_WORLD = np.array([0.0, 0.0, 0.0])
         
         # Initial Polar Config (r, h)
-        # UPDATED: Initial Radius changed to 15.0 (was 25.0)
         self.INIT_RADIUS = 15.0
         self.INIT_HEIGHT = 10.0
         self.INITIAL_SPEED = 5.0
-        self.INITIAL_ROLL_DEG = 45.0
+        self.INITIAL_ROLL_DEG = 20.0
         
         self.LANDING_Z = 0.5 
         self.MAX_STEPS = 2000
-        self.MAX_LATERAL_DIST = 25.0 
-        self.MAX_VELOCITY = 100.0     
+        self.MAX_LATERAL_DIST = 20.0 
+        self.MAX_VELOCITY = 50.0     
 
         # Observation Space (User Specific Polar)
         # Position: [r_2d, h, theta_elev] (3)
@@ -216,15 +214,31 @@ class RocketLandingEnv(gym.Env):
         self.data.qpos[self.qpos_adr+3 : self.qpos_adr+7] = [w, x, y, z]
 
         # 3. SET VELOCITY (AoA = 0)
-        # Velocity matches nose vector
-        nh = np.sin(pitch_rad) 
-        nz = np.cos(pitch_rad) 
+        # UPDATED: Use the actual Quaternion to determine the body Z-axis vector.
+        # This ensures velocity perfectly aligns with the heading, 
+        # accounting for Yaw, Pitch, AND Roll.
         
-        vx = nh * np.cos(yaw_to_target) * self.INITIAL_SPEED
-        vy = nh * np.sin(yaw_to_target) * self.INITIAL_SPEED
-        vz = nz * self.INITIAL_SPEED
-
-        self.data.qvel[self.qvel_adr : self.qvel_adr+3] = [vx, vy, vz]
+        # Formula: Rotate vector [0, 0, 1] by quaternion [w, x, y, z]
+        # The resulting vector is the direction of the local Z-axis in World frame.
+        # z_rotated = [2xz + 2wy, 2yz - 2wx, 1 - 2x^2 - 2y^2]
+        
+        dir_x = 2 * (x*z + w*y)
+        dir_y = 2 * (y*z - w*x)
+        dir_z = 1 - 2 * (x*x + y*y)
+        
+        # Normalize (just to be safe, though quat should be unit)
+        norm = np.sqrt(dir_x**2 + dir_y**2 + dir_z**2)
+        if norm > 1e-6:
+            dir_x /= norm
+            dir_y /= norm
+            dir_z /= norm
+            
+        self.data.qvel[self.qvel_adr : self.qvel_adr+3] = [
+            dir_x * self.INITIAL_SPEED,
+            dir_y * self.INITIAL_SPEED,
+            dir_z * self.INITIAL_SPEED
+        ]
+        
         self.data.qvel[self.qvel_adr+3 : self.qvel_adr+6] = [0, 0, 0]
 
         # 4. Reset Physics Props

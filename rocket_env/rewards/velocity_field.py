@@ -55,14 +55,10 @@ def compute_reward(env, m, thrust, terminated, success):
     rewards["tracking"] = alpha * v_error
 
     # 3. CONTROL EFFORT
-    # Paper uses -0.05 * ||F_B|| (Force Magnitude)
-    # We normalize thrust 0 to 1
     norm_thrust = thrust / env.MAX_THRUST
     rewards["fuel"] = beta * norm_thrust
 
-    # 4. ORIENTATION (Added for stability)
-    # The paper imposes hard constraints, but soft rewards help learning.
-    # We maintain our 'upright' bonus because it works well.
+    # 4. ORIENTATION (Added for stability) - 'upright' bonus 
     rewards["upright"] = 1.0 * (m["quat_w"] ** 2)
 
     # 5. TERMINAL REWARDS (Kappa)
@@ -82,7 +78,6 @@ def compute_reward(env, m, thrust, terminated, success):
     # Sum
     total_reward = sum(rewards.values())
     
-    # The paper adds a small positive constant 'eta' to encourage progress
     # "Alive" bonus
     total_reward += 0.01
     
