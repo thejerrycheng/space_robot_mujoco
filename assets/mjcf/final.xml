@@ -10,6 +10,9 @@
     <map znear="0.001" zfar="50"/>
   </visual>
 
+    <include file="skybox.xml" />
+    <include file="materials.xml" />
+
   <default>
     <geom contype="1" conaffinity="1"
           friction="0.8 0.1 0.01"
