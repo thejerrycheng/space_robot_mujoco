@@ -8,7 +8,7 @@ import importlib
 
 # Define path relative to this file
 ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-MJCF_PATH = os.path.join(ROOT_DIR, "assets", "mjcf", "tintin_thrust.xml")
+MJCF_PATH = os.path.join(ROOT_DIR, "assets", "mjcf", "realistic_param.xml")
 
 class RocketLandingEnv(gym.Env):
     metadata = {"render_modes": ["human"], "render_fps": 60}
