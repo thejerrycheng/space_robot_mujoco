@@ -411,10 +411,10 @@ def main():
         qvel = real_env.data.qvel
         
         # 1. Randomize Position X (index 0)
-        qpos[real_env.qpos_adr] = np.random.uniform(20, 25)
+        qpos[real_env.qpos_adr] = np.random.uniform(12, 20)
         
         # 2. Randomize Velocity (Indices 0:3)
-        vel_mag = np.random.uniform(3, 4)
+        vel_mag = np.random.uniform(2.5, 3.5)
         # vel_dir = np.random.randn(3)
         # vel_dir /= np.linalg.norm(vel_dir) # Unit vector
         # qvel[real_env.qvel_adr : real_env.qvel_adr+3] = vel_dir * vel_mag
