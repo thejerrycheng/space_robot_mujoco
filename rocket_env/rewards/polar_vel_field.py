@@ -71,7 +71,7 @@ def compute_reward(env, state, thrust_cmd, terminated, success):
     # A. Velocity Tracking
     v_error = np.linalg.norm(vel - v_ref)
     # Exp kernel: Reward is 1.0 if error is 0, decays as error grows
-    rewards["tracking"] = w_track * np.exp(-0.5 * v_error)
+    # rewards["tracking"] = w_track * np.exp(-0.5 * v_error)
     
     # B. Orientation (Upright)
     # state['quat_w'] approaches 1.0 when upright

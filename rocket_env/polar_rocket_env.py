@@ -70,7 +70,7 @@ class RocketLandingEnv(gym.Env):
         self.INIT_RADIUS = 15.0
         self.INIT_HEIGHT = 10.0
         self.INITIAL_SPEED = 5.0
-        self.INITIAL_ROLL_DEG = 20.0
+        self.INITIAL_ROLL_DEG = 0.0
         
         self.LANDING_Z = 0.5 
         self.MAX_STEPS = 2000
@@ -160,7 +160,7 @@ class RocketLandingEnv(gym.Env):
 
         # Success Criteria
         if (0.0 < m["z"] < 1.0 and 
-            m["dist_xy"] < 5 and
+            m["dist_xy"] < 5.0 and
             m["vel_err"] < 1.0 and 
             m["tilt"] < 0.1): 
             success = True

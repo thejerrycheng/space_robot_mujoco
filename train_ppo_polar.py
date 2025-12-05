@@ -29,7 +29,7 @@ def parse_args():
                         help="Custom tag for the run (e.g., 'polar_test1' -> ppo_rocket_polar_test1_date_time)")
     
     parser.add_argument("--total_timesteps", type=int, default=5_000_000, help="Total timesteps to train")
-    parser.add_argument("--num_envs", type=int, default=4, help="Number of parallel environments")
+    parser.add_argument("--num_envs", type=int, default=16, help="Number of parallel environments")
     parser.add_argument("--seed", type=int, default=None, help="Random seed")
     parser.add_argument("--viz_freq", type=int, default=20_000, help="Visualize every N episodes")
     
@@ -39,13 +39,13 @@ def parse_args():
 
     # --- PPO Hyperparameters ---
     parser.add_argument("--learning_rate", type=float, default=3e-4)
-    parser.add_argument("--n_steps", type=int, default=2048)
+    parser.add_argument("--n_steps", type=int, default=4096)
     parser.add_argument("--batch_size", type=int, default=64)
     parser.add_argument("--n_epochs", type=int, default=10)
     parser.add_argument("--gamma", type=float, default=0.95)
     parser.add_argument("--gae_lambda", type=float, default=0.95)
     parser.add_argument("--clip_range", type=float, default=0.2)
-    parser.add_argument("--ent_coef", type=float, default=0.005)
+    parser.add_argument("--ent_coef", type=float, default=0.1)
     parser.add_argument("--max_grad_norm", type=float, default=0.5)
     parser.add_argument("--device", type=str, default="auto", choices=["auto", "cuda", "cpu"])
     
