@@ -29,7 +29,7 @@ def parse_args():
     parser.add_argument("--name", type=str, default=None, 
                         help="Custom tag for the run (e.g., 'test1' -> ppo_rocket2_test1_date_time)")
     
-    parser.add_argument("--total_timesteps", type=int, default=5_000_000, help="Total timesteps to train")
+    parser.add_argument("--total_timesteps", type=int, default=1_000_000, help="Total timesteps to train")
     parser.add_argument("--num_envs", type=int, default=4, help="Number of parallel environments")
     parser.add_argument("--seed", type=int, default=None, help="Random seed")
     parser.add_argument("--viz_freq", type=int, default=20_000, help="Visualize every N episodes")

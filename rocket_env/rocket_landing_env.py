@@ -45,8 +45,8 @@ class RocketLandingEnv(gym.Env):
         # --- PHYSICS CONSTANTS (Sanity Checked) ---
         self.DRY_MASS = self.model.body_mass[self.rocket_bid]
         
-        # Req: Fuel is 50% of body weight
-        self.START_FUEL = 0.5 * self.DRY_MASS 
+        # Req: Fuel is 100% of body weight
+        self.START_FUEL = 1 * self.DRY_MASS 
         TOTAL_MASS = self.DRY_MASS + self.START_FUEL
         
         self.ISP = 250.0
@@ -163,52 +163,81 @@ class RocketLandingEnv(gym.Env):
     # =========================================================================
     # LOGIC: REWARDS
     # =========================================================================
+    def _check_termination(self, m):
+            terminated = False
+            truncated = False
+            success = False
+
+            # 1. Crash
+            if m["z"] < 0.4: terminated = True
+            
+            # 2. Out of Bounds
+            if m["lateral_dist"] > self.MAX_LATERAL_DIST: terminated = True
+                
+            # 3. Unstable / Too Fast
+            if m["vel_err"] > self.MAX_VELOCITY: terminated = True
+
+            # 4. Success Conditions
+            if (m["z"] < 1 and 
+                m["pos_err"] < 1.0 and 
+                m["vel_err"] < 1.0 and 
+                m["tilt"] < 5.0): # CHANGED: Now checks for < 5 degrees
+                success = True
+                terminated = True
+
+            if self.step_count >= self.MAX_STEPS: truncated = True
+
+            return terminated, truncated, success
+
     def _compute_reward(self, m, thrust, terminated, success):
-        """
-        m: dict containing metrics (pos_err, vel_err, tilt, etc.)
-        """
         rewards = {}
         
-        # --- A. Shaping / Continuous Rewards ---
-        rewards["dist_pen"] = -1.0 * m["pos_err"]
-        rewards["vel_pen"]  = -0.05 * m["vel_err"]
-        rewards["upright"]  = 1.0 * (m["quat_w"] ** 2)
+        # 1. UPRIGHT
+        # Note: We still use quat_w for the smooth reward curve as it's cleaner for gradients
+        rewards["upright"] = 2.0 * (m["quat_w"] ** 4)
 
-        target_vec = np.array([0, 0, self.TARGET_Z]) - m["pos"]
-        dist = np.linalg.norm(target_vec)
-        if dist > 0.1:
-            target_dir = target_vec / dist
-            approach_vel = np.dot(m["vel"], target_dir)
-            rewards["approach"] = 0.5 * approach_vel
+        # 2. DISTANCE
+        dist_reward = 5.0 / (1.0 + m["pos_err"])
+        rewards["distance"] = dist_reward * (m["quat_w"] ** 4)
+
+        # 3. PENALTIES
+        rewards["speed"] = -0.05 * (m["vel_err"] ** 2)
+        rewards["fuel"] = -0.001 * thrust
+
+        # 4. STABILITY
+        # CHANGED: tilt < 10 degrees (was 0.2)
+        if m["vel_err"] < 2.0 and m["tilt"] < 10.0:
+            rewards["stability"] = 0.5
         else:
-            rewards["approach"] = 0.0
+            rewards["stability"] = 0.0
 
-        desired_vz = -1.0 * max(m["z"] - self.TARGET_Z, 0.0)
-        desired_vz = np.clip(desired_vz, -10.0, -0.5)
-        rewards["descent"] = 1.0 * np.exp(-0.5 * abs(m["vz"] - desired_vz))
-
-        rewards["fuel"] = -0.0002 * thrust
-        rewards["spin"] = -0.1 * m["ang_err"]
-
-        # --- B. Terminal Rewards (Sparse) ---
+        # 5. TERMINAL
         rewards["terminal"] = 0.0
         
         if terminated:
             if success:
-                rewards["terminal"] = 500.0
+                rewards["terminal"] = 1000.0
                 print("🌟 SUCCESS LANDING!")
-            elif m["z"] < 0.1:  # Ground crash
-                rewards["terminal"] = -100.0
-            elif m["lateral_dist"] > self.MAX_LATERAL_DIST:  # Out of bounds
-                rewards["terminal"] = -50.0
-            elif m["vel_err"] > self.MAX_VELOCITY:  # Too fast
-                rewards["terminal"] = -50.0
+            else:
+                # Semi-Success Logic
+                # CHANGED: tilt < 20 degrees
+                is_upright = m["tilt"] < 20.0 
+                is_close   = m["pos_err"] < 5.0
+                is_slow    = m["vel_err"] < 5.0
 
-        # --- MODIFICATION: REMOVE SURVIVAL BONUS ---
-        # Sum total (Removed the + 0.1 constant)
-        total_reward = sum(rewards.values())
+                if is_upright and is_close and is_slow:
+                    # Normalize quality based on degrees (0 to 20)
+                    quality = (1.0 - m["tilt"]/20.0) + (1.0 - m["vel_err"]/5.0)
+                    rewards["terminal"] = 100.0 * quality
+                    print(f"⚠️ Semi-Success: {rewards['terminal']:.1f}")
+                elif m["z"] < 0.2: 
+                    rewards["terminal"] = -200.0
+                elif m["lateral_dist"] > self.MAX_LATERAL_DIST: 
+                    rewards["terminal"] = -100.0
+                elif m["vel_err"] > self.MAX_VELOCITY: 
+                    rewards["terminal"] = -100.0
 
-        return total_reward, rewards
+        return sum(rewards.values()), rewards
 
     # =========================================================================
     # LOGIC: TERMINATION
@@ -218,8 +247,8 @@ class RocketLandingEnv(gym.Env):
         truncated = False
         success = False
 
-        # 1. Crash (Ground Hit)
-        if m["z"] < 0.5:
+        # 1. Crash (Ground Hit) - slightly relaxed floor to prevent instant-death on touch
+        if m["z"] < 0.4:
             terminated = True
         
         # 2. Out of Bounds
@@ -231,11 +260,11 @@ class RocketLandingEnv(gym.Env):
             terminated = True
 
         # 4. Success Conditions
-        # Low height, close to center, slow speed, upright
-        if (0.0 < m["z"] < 1.0 and 
-            m["pos_err"] < 0.5 and 
-            m["vel_err"] < 0.5 and 
-            m["tilt"] < 0.05):
+        # Strict requirements for the final "+1000" reward
+        if (m["z"] < 1 and          # Close to ground
+            m["pos_err"] < 1.0 and    # Close to target X/Y
+            m["vel_err"] < 1.0 and    # Very slow (Soft landing)
+            m["tilt"] < 0.1):         # Upright
             success = True
             terminated = True
 
@@ -276,6 +305,12 @@ class RocketLandingEnv(gym.Env):
         if self.viewer is None:
             # Launch viewer in passive mode (runs on separate thread)
             self.viewer = mujoco.viewer.launch_passive(self.model, self.data)
+
+            # --- 🎥 CAMERA CONFIGURATION ---
+            self.viewer.cam.lookat[:] = [0, 0, 0] 
+            self.viewer.cam.distance = 20.0       
+            self.viewer.cam.azimuth = 35
+            self.viewer.cam.elevation = -20
 
         try:
             self.viewer.sync()
@@ -357,8 +392,24 @@ class RocketLandingEnv(gym.Env):
         """Pre-calculates all common metrics needed for reward and logic."""
         pos = self._get_pos()
         vel = self._get_vel()
-        quat = self._get_quat()
+        quat = self._get_quat() # [w, x, y, z]
         ang_vel = self._get_ang_vel()
+
+        # --- TILT CALCULATION (DEGREES) ---
+        # 1. Extract quaternion components
+        w, x, y, z = quat
+        
+        # 2. Calculate the Z-component of the local Z-vector rotated to world space.
+        #    This represents how "upright" the rocket is relative to global Z.
+        #    Range: 1.0 (Up) to -1.0 (Upside Down)
+        #    Formula derived from rotation matrix of quaternion.
+        z_projection = 1.0 - 2.0 * (x**2 + y**2)
+        
+        # 3. Safe Arccos (clip to avoid numerical errors slightly outside -1,1)
+        z_projection = np.clip(z_projection, -1.0, 1.0)
+        
+        # 4. Calculate angle in degrees
+        tilt_deg = np.rad2deg(np.arccos(z_projection))
 
         return {
             "pos": pos,
@@ -370,7 +421,7 @@ class RocketLandingEnv(gym.Env):
             "pos_err": np.linalg.norm([pos[0], pos[1], pos[2] - self.TARGET_Z]),
             "vel_err": np.linalg.norm(vel),
             "ang_err": np.linalg.norm(ang_vel),
-            "tilt": 1.0 - quat[0]
+            "tilt": tilt_deg # Now in DEGREES (0 to 180)
         }
 
     # --- Data Accessors ---

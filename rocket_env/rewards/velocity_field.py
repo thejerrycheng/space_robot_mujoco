@@ -56,7 +56,7 @@ def compute_reward(env, m, thrust, terminated, success):
 
     # 3. CONTROL EFFORT
     norm_thrust = thrust / env.MAX_THRUST
-    rewards["fuel"] = beta * norm_thrust
+    # rewards["fuel"] = beta * norm_thrust
 
     # 4. ORIENTATION (Added for stability) - 'upright' bonus 
     rewards["upright"] = 1.0 * (m["quat_w"] ** 2)
@@ -66,7 +66,7 @@ def compute_reward(env, m, thrust, terminated, success):
     
     if terminated:
         if success:
-            rewards["terminal"] = 100.0  # Paper uses 10, but our scale is different
+            rewards["terminal"] = 500.0  # Paper uses 10, but our scale is different
             print(f"🌟 SUCCESS! Fuel: {env.fuel_mass:.2f}")
         elif m["z"] < 0.1:
             rewards["terminal"] = -100.0 # Crash
@@ -79,6 +79,6 @@ def compute_reward(env, m, thrust, terminated, success):
     total_reward = sum(rewards.values())
     
     # "Alive" bonus
-    total_reward += 0.01
+    total_reward += 1
     
     return total_reward, rewards

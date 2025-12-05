@@ -162,7 +162,7 @@ class RocketLandingEnv(gym.Env):
         if (0.0 < m["z"] < 1.0 and 
             m["dist_xy"] < 5.0 and
             m["vel_err"] < 1.0 and 
-            m["tilt"] < 0.1): 
+            m["tilt"] < 0.2): 
             success = True
             terminated = True
 

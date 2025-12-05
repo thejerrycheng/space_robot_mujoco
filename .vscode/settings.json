@@ -1,3 +1,4 @@
 {
-  "github.copilot.chat.codeGeneration.useInstructionFiles": true
+  "github.copilot.chat.codeGeneration.useInstructionFiles": true,
+  "livePreview.defaultPreviewPath": "/runs/ppo_polar_no_vel_tracking_0_roll_angle_20251204_180634/test_results/trajectory_plot.html"
 }
