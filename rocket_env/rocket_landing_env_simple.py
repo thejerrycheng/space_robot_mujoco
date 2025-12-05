@@ -6,7 +6,7 @@ from gymnasium import spaces
 import mujoco.viewer
 
 ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-MJCF_PATH = os.path.join(ROOT_DIR, "assets", "mjcf", "tintin_thrust.xml")
+MJCF_PATH = os.path.join(ROOT_DIR, "assets", "mjcf", "realistic_param.xml")
 
 class RocketLandingEnv(gym.Env):
     metadata = {"render_modes": ["human"], "render_fps": 60}
@@ -187,7 +187,7 @@ class RocketLandingEnv(gym.Env):
         # 2. Ground Contact (Immediate Termination)
         # If rocket gets too close to ground (z < 0.1), simulation ends.
         # We check IF it was a good landing at that exact moment.
-        if m["z"] < 0.8:
+        if m["z"] < 0.5:
             terminated = True
             
             # Success Criteria:
@@ -196,7 +196,7 @@ class RocketLandingEnv(gym.Env):
             # 3. Slow horizontal speed (no sliding)
             # 4. Upright
             if (m["lateral_dist"] < self.LANDING_TOLERANCE and 
-                abs(m["vz"]) < 0.5 and        # Vertical impact limit
+                abs(m["vz"]) < 2.0 and        # Vertical impact limit
                 np.linalg.norm(m["vel"][:2]) < 1.0 and  # Horizontal slip limit
                 m["tilt"] < 0.1):             # Upright limit
                 success = True

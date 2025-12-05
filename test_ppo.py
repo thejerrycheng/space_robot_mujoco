@@ -15,7 +15,7 @@ from mpl_toolkits.mplot3d import Axes3D
 
 from stable_baselines3 import PPO
 from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
-from rocket_env.rocket_landing_env_simple import RocketLandingEnv
+from rocket_env.rocket_landing_env import RocketLandingEnv
 
 # ================================================================
 #   UTILITIES: COLORS & DASHBOARD

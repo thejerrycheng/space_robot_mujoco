@@ -6,7 +6,7 @@ from gymnasium import spaces
 import mujoco.viewer
 
 ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-MJCF_PATH = os.path.join(ROOT_DIR, "assets", "mjcf", "tintin_thrust.xml")
+MJCF_PATH = os.path.join(ROOT_DIR, "assets", "mjcf", "realistic_param.xml")
 
 class RocketLandingEnv(gym.Env):
     metadata = {"render_modes": ["human"], "render_fps": 60}
@@ -215,7 +215,7 @@ class RocketLandingEnv(gym.Env):
             terminated = True
 
         # 2. Ground Interaction Logic
-        if m["z"] < 0.5: 
+        if m["z"] < 0.3: 
             # Case A: Landed far from target -> Immediate Failure
             if m["lateral_dist"] > self.LANDING_TOLERANCE:
                 terminated = True
