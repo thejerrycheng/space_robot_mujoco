@@ -328,6 +328,7 @@ def get_env_class(env_name):
         "default2": "rocket_env.rocket_2_env",
         "polar": "rocket_env.polar_rocket_env",
         "default3": "rocket_env.rocket_3_env",
+        "defaultjuncheng": "rocket_env.rocket_2_env_juncheng",
         # Assuming your file is named RocketLandingEnv.py and in root or rocket_env
         "current": "RocketLandingEnv" 
     }
