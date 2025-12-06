@@ -67,7 +67,7 @@ class RocketLandingEnv(gym.Env):
         self.TARGET_POS_WORLD = np.array([0.0, 0.0, 0.0])
         
         # Initial Polar Config (r, h)
-        self.INIT_RADIUS = 15.0
+        self.INIT_RADIUS = 150.0
         self.INIT_HEIGHT = 10.0
         self.INITIAL_SPEED = 5.0
         self.INITIAL_ROLL_DEG = 0.0
@@ -356,6 +356,7 @@ class RocketLandingEnv(gym.Env):
             ang_acc,    # 3
             [self.fuel_mass] # 1
         ])
+        
 
     def render(self):
         if self.render_mode != "human": return

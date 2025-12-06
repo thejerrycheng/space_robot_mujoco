@@ -3,6 +3,37 @@ import sys
 import time
 import argparse
 import numpy as np
+
+# ========= 修补 numpy.clip，避免 __array_function__ 报错 =========
+def _safe_clip(a, a_min=None, a_max=None, out=None, **kwargs):
+    """
+    简单版 np.clip 实现，专门给 SB3 用：
+    - a, a_min, a_max 都转成 ndarray
+    - 用 np.minimum / np.maximum 做裁剪
+    - 支持 out 参数（如果传入，就写回 out 并返回 out）
+    """
+    a = np.asarray(a)
+
+    if a_min is not None:
+        a_min = np.asarray(a_min)
+    if a_max is not None:
+        a_max = np.asarray(a_max)
+
+    result = a
+    if a_max is not None:
+        result = np.minimum(result, a_max)
+    if a_min is not None:
+        result = np.maximum(result, a_min)
+
+    if out is not None:
+        out[...] = result
+        return out
+    return result
+
+# 全局替换 numpy.clip，让后面 SB3 的 np.clip() 都走我们这个实现
+np.clip = _safe_clip
+# ========= 修补结束 =========
+
 import subprocess
 import csv
 import matplotlib
@@ -390,6 +421,17 @@ def main():
         model_path = os.path.join(args.run_path, "final_model.zip")
     
     print(f"{Col.BOLD}🚀 Loading Model: {model_path}{Col.RESET}")
+    import sys
+
+    # 兼容 numpy 2.x 保存的模型（cloudpickle 里引用 numpy._core.numeric）
+    try:
+        import numpy.core.numeric as _numeric
+        sys.modules["numpy._core.numeric"] = _numeric
+        print("✅ Patched numpy._core.numeric alias")
+    except Exception as e:
+        print("⚠️ Failed to patch numpy._core.numeric:", e)
+
+
     model = PPO.load(model_path)
 
     # 5. Create RAW Environment
@@ -515,6 +557,7 @@ def main():
         is_success = info.get('success', False)
         # Semi-Success: purely based on horizontal distance < 5.0m
         is_semi_success = (dist_xy < 5.0) and not is_success
+
 
         result_msg = "❌ FAILURE"
         if is_success:
