@@ -39,7 +39,7 @@ class RocketLandingEnv(gym.Env):
         self.AXY_MAX = 0.5 * 1.62  # 水平方向最多 0.3g
 
         # gimbal 使用比例，不用满行程
-        self.GIMBAL_FRACTION = 0.4     # 最多用 40% 的 MAX_GIMBAL
+        self.GIMBAL_FRACTION = 0.2     # 最多用 40% 的 MAX_GIMBAL
 
 
         # ----------------------------------------------------------------
@@ -86,17 +86,17 @@ class RocketLandingEnv(gym.Env):
         self.DT = self.model.opt.timestep
 
         # --- CONTROL LIMITS ---
-        self.MAX_THRUST = TOTAL_MASS * MOON_G * 2.0
-        self.MAX_GIMBAL = np.deg2rad(3.0)
+        self.MAX_THRUST = TOTAL_MASS * MOON_G * 4.0
+        self.MAX_GIMBAL = np.deg2rad(15.0)
 
         # --- TASK CONSTANTS (FIXED) ---
         self.TARGET_POS_WORLD = np.array([0.0, 0.0, 0.0])
-        self.START_POS_FIXED  = np.array([500.0, 0.0, 500.0])
+        self.START_POS_FIXED  = np.array([100.0, 0.0, 500.0])
         self.INITIAL_SPEED    = 3.0 
         self.PITCH_DOWN_DEG   = 0
         self.LANDING_Z = 0.5 
         
-        self.MAX_STEPS = 2000
+        self.MAX_STEPS = 20000
         self.MAX_LATERAL_DIST = 10000.0 
         self.MAX_VELOCITY = 10000.0     
 
@@ -126,115 +126,182 @@ class RocketLandingEnv(gym.Env):
         print("Actuator names:", [mujoco.mj_id2name(self.model, mujoco.mjtObj.mjOBJ_ACTUATOR, i)
                                 for i in range(self.model.nu)])
         
+    def quat_to_euler_rad(self, quat):
+        """Convert [w, x, y, z] to [roll, pitch, yaw] in radians."""
+        w, x, y, z = quat
+
+        # Roll (x-axis rotation)
+        sinr_cosp = 2 * (w * x + y * z)
+        cosr_cosp = 1 - 2 * (x * x + y * y)
+        roll = np.arctan2(sinr_cosp, cosr_cosp)
+
+        # Pitch (y-axis rotation)
+        sinp = 2 * (w * y - z * x)
+        if np.abs(sinp) >= 1:
+            pitch = np.copysign(np.pi / 2, sinp)
+        else:
+            pitch = np.arcsin(sinp)
+
+        # Yaw (z-axis rotation)
+        siny_cosp = 2 * (w * z + x * y)
+        cosy_cosp = 1 - 2 * (y * y + z * z)
+        yaw = np.arctan2(siny_cosp, cosy_cosp)
+
+        return np.array([roll, pitch, yaw], dtype=np.float64)
+
+
     def compute_landing_ctrl(self):
         """
-        极简着陆控制器（写在 env 里面）：
-        - 垂直：目标下降速度 v_z^*(z)，用一阶速度环调 thrust，不再总是拉满。
-        - 水平：PD 控制期望水平加速度 a_xy^*，一起合成“期望推力方向向量”，
-                再一次性解出 yaw / pitch，避免两个舵机互相打架。
+        基于“最小化 gimbal + 最小化角速度 + 竖直软着陆”思路的控制器。
+        - 不追踪水平位置，只要求最后竖直、速度接近 0。
+        - 垂直方向：高度依赖的目标下降速度 -> PD 速度环 -> 期望加速度 -> 推力。
+        - 姿态方向：以 pitch 为主的 PD（yaw 只做阻尼），大幅抑制角速度。
+        - 在接近竖直时自动把 gimbal 命令压得很小（间接“最小化偏转角”）。
         返回:
-            thrust_cmd  [N]
-            yaw_cmd     [rad]
-            pitch_cmd   [rad]
+            thrust_cmd [N]           ∈ [0, MAX_THRUST]
+            yaw_cmd, pitch_cmd [rad] ∈ [-MAX_GIMBAL, +MAX_GIMBAL]
         """
+        model, data = self.model, self.data
+        g  = -model.opt.gravity[2]           # Moon g ≈ 1.62
+        dt = model.opt.timestep
 
-        # ---- 当前状态 ----
-        pos = self._get_pos()
-        vel = self._get_vel()
-        z   = pos[2]
-        vz  = vel[2]
+        # --------- 当前状态 ---------
+        pos  = data.qpos[self.qpos_adr : self.qpos_adr+3].copy()      # [x, y, z]
+        vel  = data.qvel[self.qvel_adr : self.qvel_adr+3].copy()      # [vx, vy, vz]
+        quat = data.qpos[self.qpos_adr+3 : self.qpos_adr+7].copy()    # [w, x, y, z]
+        roll, pitch, yaw = self.quat_to_euler_rad(quat)               # [rad]
 
-        # 当前总质量（干质量 + 剩余燃料）
-        m = self.DRY_MASS + self.fuel_mass
-        g = -float(self.model.opt.gravity[2])   # ≈ 1.62
+        z  = float(pos[2])
+        vz = float(vel[2])
 
-        # =====================================================================
-        # 1) 垂直方向：目标下降速度曲线 v_z^*(z) + 速度环 → a_z_extra
-        # =====================================================================
-        if z > self.Z_SLOWDOWN_ALT:
-            # 高空：下降快一点
-            vz_target = self.VZ_TARGET_FAR      # 例如 -5 m/s
+        # 角速度（body frame / spatial frame，这里主要用来做阻尼）
+        ang_vel = data.cvel[self.rocket_bid][:3].copy()  # [wx, wy, wz]
+
+        # 度数形式，方便调参 / debug
+        roll_deg  = np.degrees(roll)
+        pitch_deg = np.degrees(pitch)
+        yaw_deg   = np.degrees(yaw)
+        tilt_deg  = np.sqrt(roll_deg**2 + pitch_deg**2)
+
+        # 质量 = 干质量 + 剩余燃料
+        dry_mass  = getattr(self, "DRY_MASS",
+                             self.model.body_mass[self.rocket_bid])
+        fuel_mass = getattr(self, "fuel_mass", 0.0)
+        m = dry_mass + fuel_mass
+
+        # ============================================================
+        # 1. 垂直控制：高度依赖的目标下降速度 + 速度环
+        #    思路：高空允许较快下落，越接近地面越慢，最后在 z≈LANDING_Z 减速到 0
+        # ============================================================
+        z_target = getattr(self, "LANDING_Z", 0.5)
+        h = max(z - z_target, 0.0)       # 离着陆面的高度
+
+        # 1.1 目标下降速度 vz_ref(h)
+        # 高空：接近 -35 m/s，自由下落 + 一点控制
+        # 中高空：逐渐减小
+        # 近地面 (< 20m)：线性 taper 到 0，保证软着陆
+        if h > 300.0:
+            vz_ref = -35.0
+        elif h > 200.0:
+            vz_ref = -25.0
+        elif h > 120.0:
+            vz_ref = -15.0
+        elif h > 60.0:
+            vz_ref = -8.0
+        elif h > 20.0:
+            # 20m 以内开始明显刹车
+            # h=20 -> -4 m/s, h=0 -> 0 m/s
+            vz_ref = -4.0 * (h / 20.0)
         else:
-            # 低空：在 [VZ_TARGET_FAR, VZ_TARGET_NEAR] 之间线性插值
-            alpha = np.clip(z / self.Z_SLOWDOWN_ALT, 0.0, 1.0)
-            vz_target = alpha * self.VZ_TARGET_FAR + (1.0 - alpha) * self.VZ_TARGET_NEAR
+            # 最后 20m 内再收一档，接近地面要非常慢
+            vz_ref = -1.5 * (h / 20.0)   # h=20 -> -1.5, h=0 -> 0
 
-        vz_err = vz_target - vz                 # 目标 - 当前
-        a_z_extra = self.Kv_z * vz_err          # “额外”竖直加速度（相对 free-fall）
+        # 1.2 速度环：根据 (vz_ref - vz) 给一个期望向上的额外加速度
+        #       a_z_des > 0 表示需要额外向上加速（减小下落速度）
+        K_v_far  = 0.6   # 高空增益
+        K_v_near = 1.0   # 近地面更激进一点，保证拉住
+        alpha = np.clip(h / 100.0, 0.0, 1.0)
+        K_v = K_v_near + (K_v_far - K_v_near) * alpha
 
-        # 限幅：额外加速度不能太大
-        a_z_extra = np.clip(a_z_extra,
-                            -self.AZ_MAX_DOWN,   # 负数：加速下落
-                            +self.AZ_MAX_UP)     # 正数：减速 / 上升
+        a_z_des = K_v * (vz_ref - vz)
 
-        # 总竖直加速度（世界系，向上为正） = g + 额外项
-        a_z_total = g + a_z_extra
+        # 限制最大上下加速度，防止过激
+        a_z_up_max   = 3.0 * g    # 最大向上加速度（约 3g）
+        a_z_down_max = 0.5 * g    # 最大额外向下加速度（加速下落用得不多）
+        a_z_des = np.clip(a_z_des, -a_z_down_max, a_z_up_max)
 
-        # =====================================================================
-        # 2) 推力大小：T = m * a_z_total   （不能为负）
-        # =====================================================================
-        if a_z_total <= 0.0:
-            # 不会反向推火箭，a_z_total<=0 说明“推力不如自由落体有用”，干脆关掉推力
-            thrust_cmd = 0.0
-        else:
-            thrust_cmd = m * a_z_total
+        # 1.3 推力计算：T = m * (g + a_z_des)
+        F_des = m * (g + a_z_des)
+        F_des = float(np.clip(F_des, 0.0, self.MAX_THRUST))
 
-        thrust_cmd = np.clip(thrust_cmd, 0.0, self.MAX_THRUST)
+        # 额外保险：在高空且下落速度太大时，强制不低于一定推力
+        if h > 250.0 and vz < -10.0:
+            F_des = max(F_des, 0.30 * self.MAX_THRUST)
 
-        # =====================================================================
-        # 3) 水平方向：PD 得到期望水平加速度 a_xy_des
-        # =====================================================================
-        xy   = pos[:2]
-        v_xy = vel[:2]
+        # ============================================================
+        # 2. 姿态控制：目标 roll=pitch=0（竖直），并强烈抑制角速度
+        #    思路：
+        #      - 大倾角时允许多用一点 gimbal 以加快翻转；
+        #      - 进入竖直附近时，快速把 gimbal 命令收小，避免抖动；
+        #      - yaw 只做阻尼，避免绕 z 自转。
+        # ============================================================
 
-        xy_err  = -xy        # 目标是 (0,0)
-        vxy_err = -v_xy
+        # 2.1 根据倾角设置增益（gain scheduling）
+        # 倾角越大，允许的修正力度越大；接近竖直时减小增益 -> gimbal 自动变小
+        tilt_for_gain = np.clip(abs(pitch_deg) / 80.0, 0.0, 1.0)  # 约 0~1
+        tilt_for_gain = max(0.2, tilt_for_gain)                   # 至少保留一点控制
 
-        a_xy_des = self.Kp_xy * xy_err + self.Kd_xy * vxy_err
+        # 基础增益（可再调）
+        Kp_pitch_base = 0.08
+        Kd_pitch_base = 0.6
 
-        # 限制水平加速度模长，避免倾角太大（例如最多 0.5 g）
-        a_xy_norm = np.linalg.norm(a_xy_des)
-        if a_xy_norm > 1e-6:
-            scale = min(1.0, self.AXY_MAX / a_xy_norm)
-            a_xy_des = a_xy_des * scale
+        Kp_pitch = Kp_pitch_base * tilt_for_gain
+        Kd_pitch = Kd_pitch_base * tilt_for_gain
 
-        # =====================================================================
-        # 4) 合成“期望推力方向向量” → thrust direction t_W
-        # =====================================================================
-        # 注意：这里用的是 [a_x, a_y, a_z_total]，方向和真正 thrust 一致
-        a_vec = np.array([a_xy_des[0], a_xy_des[1], a_z_total], dtype=np.float64)
+        # pitch 角速度（这里用 ang_vel[1]，按你原来习惯）
+        pitch_rate = ang_vel[1]
 
-        if np.linalg.norm(a_vec) < 1e-6:
-            tW = np.array([0.0, 0.0, 1.0], dtype=np.float64)  # 默认向上
-        else:
-            tW = a_vec / np.linalg.norm(a_vec)
+        # 标准 PD：目标 pitch = 0
+        pitch_cmd_local = -Kp_pitch * pitch - Kd_pitch * pitch_rate
 
-        tx, ty, tz = tW
+        # 竖直附近，如果角度和角速度都很小，直接把命令归零，避免小抖动
+        if abs(pitch_deg) < 3.0 and abs(np.degrees(pitch_rate)) < 3.0:
+            pitch_cmd_local = 0.0
 
-        # =====================================================================
-        # 5) 由期望推力方向 tW 反解 universal joint 的 yaw / pitch
-        #    假设：先绕 yaw，再绕 pitch（MuJoCo XML 的顺序），
-        #          推力大致沿 body +Z 轴。
-        # =====================================================================
-        # yaw 使得(0,y,z) → 对齐 tW 的 y-z 投影
-        yaw = np.arctan2(ty, tz)
+        # 2.2 yaw：只做阻尼，不追任何目标方位
+        K_yaw_damp = 0.6
+        yaw_rate = ang_vel[2]
+        yaw_cmd_local = -K_yaw_damp * yaw_rate
 
-        # 为了计算 pitch，要补偿 yaw 的影响，防止 cos(yaw) 接近 0
-        cos_y = np.cos(yaw)
-        if abs(cos_y) < 1e-4:
-            cos_y = np.sign(cos_y) * 1e-4 if cos_y != 0 else 1e-4
+        # 2.3 gimbal 物理限制 + “少用偏转角”策略
+        # 最大只用 80% 的 MAX_GIMBAL
+        gimbal_limit = self.MAX_GIMBAL * 0.8
 
-        # pitch 负责在 x-z 平面内倾斜
-        pitch = np.arctan2(-tx, tz / cos_y)
+        pitch_cmd = float(np.clip(pitch_cmd_local, -gimbal_limit, gimbal_limit))
+        yaw_cmd   = float(np.clip(yaw_cmd_local,   -gimbal_limit, gimbal_limit))
 
-        # =====================================================================
-        # 6) 限制到 gimbal 行程的一部分，避免来回“打架”
-        # =====================================================================
-        max_gimbal = self.GIMBAL_FRACTION * self.MAX_GIMBAL   # 例如 0.4 * 10° ≈ 4°
-        yaw_cmd   = np.clip(yaw,   -max_gimbal, max_gimbal)
-        pitch_cmd = np.clip(pitch, -max_gimbal, max_gimbal)
+        # ============================================================
+        # （可选）DEBUG 打印
+        # ============================================================
+        step_idx = int(data.time / dt)
+        step_idx = int(data.time / dt)
+        if step_idx % 50 == 0:
+            print(
+                f"[ATT] step={step_idx:5d} "
+                f"tilt={tilt_deg:6.2f}deg "
+                f"pitch={pitch_deg:7.2f}deg "
+                f"pitch_cmd(rad)={pitch_cmd: .4f} "
+            )
 
-        return thrust_cmd, yaw_cmd, pitch_cmd
+        # 这里保持你原来的符号约定：外面用 F_des, -yaw_cmd, -pitch_cmd
+        return F_des, -yaw_cmd, -pitch_cmd
+
+
+
+
+
+
+
 
 
 
