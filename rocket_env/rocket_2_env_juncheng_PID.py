@@ -246,45 +246,85 @@ class RocketLandingEnv(gym.Env):
         # ============================================================
 
         # pitch 是弧度，先转成“带符号”的角度
-                # ============================================================
-        # 2. 姿态控制：连续的 PD 控制（目标 pitch = 0）
-        #    不再分段，用 pitch 和 pitch_rate 做一个标准 PD，
-        #    然后根据高度和竖直速度连续缩放，接近地面/速度很小时
-        #    自动把控制量收得很小。
-        # ============================================================
+        pitch_deg = np.degrees(pitch)
 
-        # pitch, pitch_rate 这里都是弧度制
-        gimbal_limit = self.MAX_GIMBAL * 1.3   # 最大可用舵机角
+        gimbal_limit = self.MAX_GIMBAL*1.3
 
-        # -------- PID 参数（你之后可以自己调）---------
-        Kp_pitch = gimbal_limit / np.deg2rad(90.0)   # 约等于 “90 度误差 -> 饱和”
-        Kd_pitch = 0.5 * gimbal_limit               # 角速度项，先给个中等值
+        FLIP_HIGH = 90.0
+        FLIP_LOW  = 80.0   # 90~80: 最大翻转
+        SLOW_LOW  = 65.0   # 80~55: 力度减小
+        BRAKE_LOW = 20.0   # 55~20: 刹车到 0
+        # DEAD_BAND = 2.0  # 这版你要求里其实没用到
+        VEL_SMALL_DEG = 1.0   # 角速度阈值：小于这个就认为“快停了”
 
-        # 目标 pitch = 0（竖直），误差 = 当前角度
-        err_pitch      = pitch          # rad
-        err_pitch_rate = pitch_rate     # rad/s
+        pitch_cmd_local = 0.0
 
-        # 纯 PD：注意这里符号是“正误差 -> 正指令”，
-        # 方向如果反了，只要把整个式子前面加一个负号就行：
-        pitch_cmd_local = Kp_pitch * err_pitch + Kd_pitch * err_pitch_rate
+        if pitch_deg >= FLIP_LOW:
+            # 90 ~ 80: pitch_cmd = +gimbal_limit
+            pitch_cmd_local = gimbal_limit
 
-        # -------- 根据高度 / 竖直速度连续缩放 --------
-        # 高度 0~50 m：从 0 慢慢放大到 1
-        alt_scale = np.clip(h / 50.0, 0.0, 1.0)
-        # 竖直速度 0~5 m/s：从 0 慢慢放大到 1
-        vz_scale  = np.clip(abs(vz) / 5.0, 0.0, 1.0)
+        elif pitch_deg >= SLOW_LOW:
+            # 80 ~ 55: 从 +gimbal_limit 线性减到 0
+            #  SLOW_LOW -> 0, FLIP_LOW -> 1
+            t = (pitch_deg - SLOW_LOW) / (FLIP_LOW - SLOW_LOW)
+            t = max(0.0, min(1.0, t))
+            pitch_cmd_local = 3*gimbal_limit * t
 
-        # 取两者的最大值——只要高度高或者速度还不小，就保留较大的控制量；
-        # 高度又低、速度又小的时候自动接近 0
-        scale = max(alt_scale, vz_scale)
+        elif pitch_deg >= BRAKE_LOW:
+            # 55 ~ 20: 从 0 线性减到 -0.3*gimbal_limit
+            #  BRAKE_LOW -> 0, SLOW_LOW -> 1
+            t = (pitch_deg - BRAKE_LOW) / (SLOW_LOW - BRAKE_LOW)
+            t = max(0.0, min(1.0, t))
+            pitch_cmd_local = -0.2 * gimbal_limit * t
 
-        pitch_cmd_local *= scale
 
-        # 最后做一次限幅（防止溢出）
+        elif pitch_deg >= 3.0:
+            # 20 ~ 0
+            t = pitch_deg / BRAKE_LOW
+            t = max(0.0, min(1.0, t))
+            base_cmd = -0.13 * gimbal_limit * t
+
+            # 这里用 pitch_rate_deg（刚算出来的）
+            if abs(pitch_rate_deg) < VEL_SMALL_DEG:
+                micro = 0.003 * gimbal_limit
+                if abs(base_cmd) > micro:
+                    pitch_cmd_local = np.sign(base_cmd) * micro
+                else:
+                    pitch_cmd_local = base_cmd
+            else:
+                pitch_cmd_local = base_cmd
+
+        elif pitch_deg >= -20.0:
+            # 0 ~ -20
+            t = (-pitch_deg) / 20.0
+            t = max(0.0, min(1.0, t))
+            base_cmd = -0.18 * gimbal_limit * t
+
+            if abs(pitch_rate_deg) < VEL_SMALL_DEG:
+                micro = 0.005 * gimbal_limit
+                if abs(base_cmd) > micro:
+                    pitch_cmd_local = np.sign(base_cmd) * micro
+                else:
+                    pitch_cmd_local = base_cmd
+            else:
+                pitch_cmd_local = base_cmd
+
+        else:
+            # pitch_deg < -20: 先简单饱和在 +0.3*gimbal_limit
+            pitch_cmd_local = 0
+            
+        if abs(z) < 5:
+            pitch_cmd_local = 0.0
+        if abs(vz) < 2:
+            pitch_cmd_local = 0.0
+
+
+        # 限幅一次（防止浮点误差）
         pitch_cmd = float(np.clip(pitch_cmd_local, -gimbal_limit, gimbal_limit))
 
-        # yaw 先简单置 0（只要你不特别想控制偏航）
-        yaw_cmd_local = 0.0
+        # yaw 你之前用的是简单阻尼，这里不乱改：
+        K_yaw_damp = 0.6
+        yaw_cmd_local = 0
         yaw_cmd = float(np.clip(yaw_cmd_local, -gimbal_limit, gimbal_limit))
 
         # DEBUG（可选）
@@ -292,14 +332,13 @@ class RocketLandingEnv(gym.Env):
         if step_idx % 50 == 0:
             print(
                 f"[ATT] step={step_idx:5d} "
-                f"pitch={np.degrees(pitch):7.2f}deg "
-                f"pitch_rate={np.degrees(pitch_rate):7.2f}deg/s "
-                f"scale={scale: .3f} "
-                f"pitch_cmd={pitch_cmd: .4f}"
+                f"pitch={pitch_deg:7.2f}deg "
+                f"pitch_cmd_local={pitch_cmd_local: .4f}"
             )
 
-        return F_des, yaw_cmd, pitch_cmd
-
+        # 注意：这里我**不再对 pitch_cmd 做任何额外加负号**。
+        # 外面的接口你要不要 -pitch_cmd，由你自己决定：
+        return F_des, yaw_cmd, pitch_cmd  # 如果你之前就是这样，就保持这样
 
 
 
