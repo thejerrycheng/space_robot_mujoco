@@ -91,7 +91,7 @@ class RocketLandingEnv(gym.Env):
 
         # --- TASK CONSTANTS (FIXED) ---
         self.TARGET_POS_WORLD = np.array([0.0, 0.0, 0.0])
-        self.START_POS_FIXED  = np.array([500.0, 0.0, 500.0])
+        self.START_POS_FIXED  = np.array([100.0, 0.0, 500.0])
         self.INITIAL_SPEED    = 3.0 
         self.PITCH_DOWN_DEG   = 0
         self.LANDING_Z = 0.5 

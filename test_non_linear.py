@@ -666,7 +666,7 @@ def test_env(env_name, episodes=5):
 
             sys.stdout.write(log_line)
             sys.stdout.flush()
-            time.sleep(0.005) # Speed up slightly
+            time.sleep(0) # Speed up slightly
 
         all_histories.append(episode_history)
 
