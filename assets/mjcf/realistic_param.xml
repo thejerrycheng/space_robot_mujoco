@@ -79,7 +79,7 @@ Here is the complete XML code for the environment: -->
     <!-- ========================================================= -->
     <!-- ROCKET ROOT BODY (100m tall, 10m diameter, 5000-ton mass) -->
     <!-- ========================================================= -->
-    <body name="ball" pos="0 0 150">
+    <body name="ball" pos="0 0 200">
         <freejoint name="ball_free"/>
 
         <!-- realistic huge inertia for a 5000-ton, 100m long tube -->

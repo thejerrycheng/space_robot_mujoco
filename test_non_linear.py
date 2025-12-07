@@ -48,6 +48,196 @@ def quat_to_euler(quat):
 
     return np.degrees(np.array([roll, pitch, yaw]))
 
+
+
+def my_controller(env, step_idx):
+    """
+    非线性“伪PID”控制器：
+    - 根据 env.ref_traj（如果存在）做位置跟踪
+    - 用 roll/pitch 稳定姿态
+    - 输出 action: [thrust_norm, yaw_norm, pitch_norm] in [-1,1]
+    """
+
+    # ---- 0. 常量 / 参数 ----
+    dt = env.model.opt.timestep
+    g_vec = env.model.opt.gravity.copy()   # [0,0,-1.62]
+    g = -g_vec[2]
+
+    # 当前总质量（干质量 + 燃料）
+    dry_mass = getattr(env, "DRY_MASS", 5e6)
+    fuel_mass = getattr(env, "fuel_mass", 0.0)
+    m = dry_mass + fuel_mass
+
+    max_thrust = env.MAX_THRUST
+    max_gimbal = env.MAX_GIMBAL   # [rad]
+
+    # ---- 1. 当前状态 ----
+    pos = env.data.qpos[env.qpos_adr : env.qpos_adr+3].copy()
+    vel = env.data.qvel[env.qvel_adr : env.qvel_adr+3].copy()
+    quat = env.data.qpos[env.qpos_adr+3 : env.qpos_adr+7].copy()
+    rpy = quat_to_euler(quat)  # [roll, pitch, yaw], rad
+    roll, pitch, yaw = rpy
+
+    # ---- 2. 目标状态（参考轨迹）----
+    if hasattr(env, "ref_traj") and len(env.ref_traj) > 1:
+        idx = min(step_idx, len(env.ref_traj) - 2)    # 注意 -2，这样 idx+1 不越界
+        p_ref = np.array(env.ref_traj[idx])
+        p_next = np.array(env.ref_traj[idx + 1])
+
+        # 轨迹切线方向（从当前位置飞往下一点）
+        dir_traj = p_next - p_ref
+        if np.linalg.norm(dir_traj) < 1e-6:
+            dir_traj = np.array([0, 0, -1.0])   # 退化情况：随便给个向下方向
+        dir_traj = dir_traj / np.linalg.norm(dir_traj)
+
+        v_ref = np.zeros(3)
+    else:
+        p_ref = np.array(env.TARGET_POS_WORLD)
+        dir_traj = np.array([0, 0, -1.0])  # 没轨迹就朝下
+        v_ref = np.zeros(3)
+
+    # 世界系 Z 轴
+    z_world = np.array([0, 0, 1.0])
+
+    # 假设希望“body +Z” 对齐 “-dir_traj”（比如轨迹往下，火箭 nose 朝上）
+    body_z_des = -dir_traj
+
+    q_des = quat_from_two_vectors(z_world, body_z_des)  # [w,x,y,z]
+
+
+    # ---- 3. 位置 / 速度误差 ----
+    e_p = p_ref - pos         # 位置误差
+    e_v = v_ref - vel         # 速度误差
+
+    # 分量
+    ex, ey, ez = e_p
+    evx, evy, evz = e_v
+
+    # ---- 4. 高度控制（非线性推力）----
+    # 想要的竖直加速度 a_z_des
+    Kpz = 15
+    Kdz = 15
+    z_des = p_ref[2]
+    vz_des = v_ref[2]
+
+    e_z = z_des - pos[2]
+    ev_z = vz_des - vel[2]
+
+    a_z_des = Kpz * e_z + Kdz * ev_z + g  # +g 抵消重力
+
+    # 限制竖直加速度，避免过猛（非线性：clip）
+    a_z_des = np.clip(a_z_des, -0.5 * g, 2.0 * g)
+
+    # 推力大小
+    F_des = m * max(0.0, a_z_des)  # 不能为负
+
+    # 映射到 [0, max_thrust]
+    F_des = np.clip(F_des, 0.0, max_thrust)
+
+    # 再映射到动作空间 [-1,1]
+    thrust_norm = 2.0 * (F_des / max_thrust) - 1.0
+    thrust_norm = float(np.clip(thrust_norm, -1.0, 1.0))
+
+    # ---- 5. 水平控制 → 期望倾斜角 ----
+    # 想要水平加速度（简单 PD）
+    Kpxy = 5
+    Kdxy = 10
+
+    a_x_des = Kpxy * ex + Kdxy * evx
+    a_y_des = Kpxy * ey + Kdxy * evy
+
+    # 小角度近似：a ≈ g * theta  →  theta ≈ a / g
+    # 这里我们定义：
+    #   - pitch_des 控制 x 方向
+    #   - roll_des  控制 y 方向
+    pitch_des = -a_x_des / g    # 负号看你坐标系方向，可调
+    roll_des  =  a_y_des / g
+
+    # 限制期望倾角
+    max_tilt = np.deg2rad(10.0)
+    pitch_des = np.clip(pitch_des, -max_tilt, max_tilt)
+    roll_des  = np.clip(roll_des,  -max_tilt, max_tilt)
+
+    # ---- 6. 姿态稳态控制（roll/pitch PD）----
+    def quat_conjugate(q):
+        w, x, y, z = q
+        return np.array([w, -x, -y, -z])
+
+    def quat_mul(q1, q2):
+        w1,x1,y1,z1 = q1
+        w2,x2,y2,z2 = q2
+        return np.array([
+            w1*w2 - x1*x2 - y1*y2 - z1*z2,
+            w1*x2 + x1*w2 + y1*z2 - z1*y2,
+            w1*y2 - x1*z2 + y1*w2 + z1*x2,
+            w1*z2 + x1*y2 - y1*x2 + z1*w2
+        ])
+
+    # 当前姿态
+    quat = env.data.qpos[env.qpos_adr+3 : env.qpos_adr+7].copy()
+
+    # 姿态误差：q_err = q_des * conj(q)
+    q_err = quat_mul(q_des, quat_conjugate(quat))
+    # 对应的小角度误差向量（近似）：e_rot ≈ 2 * q_err[1:4]
+    e_rot = 2.0 * q_err[1:4]  # [ex, ey, ez]
+
+    # 当前角速度（世界或机体系，看你现在怎么用，这里沿用你已有的）
+    ang_vel = env.data.cvel[env.rocket_bid][:3].copy()  # [wx, wy, wz]
+
+    Kp_att = 3.0
+    Kd_att = 1.0
+
+    # 想要的“控制力矩方向”
+    m_des = Kp_att * e_rot - Kd_att * ang_vel   # 这个是个 3D 向量
+
+    # e_rot = [ex, ey, ez]，近似地把 ex → pitch, ey → yaw （或者反之，看你模型）
+    pitch_cmd = +m_des[0]   # or m_des[1]，看视角
+    yaw_cmd   = -m_des[1]   # 号数可能要试几次
+
+    # 限制在 [-MAX_GIMBAL, MAX_GIMBAL]
+    pitch_servo = np.clip(pitch_cmd, -max_gimbal, max_gimbal)
+    yaw_servo   = np.clip(yaw_cmd,   -max_gimbal, max_gimbal)
+
+    # 映射到 [-1,1]
+    pitch_norm = float(np.tanh(pitch_servo / max_gimbal))
+    yaw_norm   = float(np.tanh(yaw_servo   / max_gimbal))
+
+    # 加一点非线性：tanh 压缩，使得小动作精细，大动作平滑饱和
+    pitch_norm = float(np.tanh(pitch_norm))
+    yaw_norm   = float(np.tanh(yaw_norm))
+
+    action = np.array([thrust_norm, yaw_norm, pitch_norm], dtype=np.float32)
+    return action
+
+
+def quat_from_two_vectors(v_from, v_to):
+    """
+    给定世界系下两个单位向量 v_from, v_to，生成一个把 v_from 旋转到 v_to 的四元数 [w,x,y,z]
+    """
+    v_from = v_from / np.linalg.norm(v_from)
+    v_to   = v_to   / np.linalg.norm(v_to)
+
+    c = np.dot(v_from, v_to)
+    if c < -0.999999:
+        # 180 度翻转：找一个任意正交轴
+        axis = np.cross(v_from, np.array([1, 0, 0]))
+        if np.linalg.norm(axis) < 1e-6:
+            axis = np.cross(v_from, np.array([0, 1, 0]))
+        axis = axis / np.linalg.norm(axis)
+        return np.array([0.0, axis[0], axis[1], axis[2]])
+
+    axis = np.cross(v_from, v_to)
+    s = np.sqrt((1.0 + c) * 2.0)
+    invs = 1.0 / s
+    return np.array([
+        0.5 * s,
+        axis[0] * invs,
+        axis[1] * invs,
+        axis[2] * invs
+    ], dtype=np.float64)
+
+
+
 def get_body_z_axis(quat):
     """ 
     Calculates the Body Z-axis vector in World Frame given a quaternion [w,x,y,z].
@@ -397,11 +587,25 @@ def test_env(env_name, episodes=5):
         }
 
         while not (done or truncated):
+            if step % 50 == 0:
+                print("ctrl thrust/yaw/pitch =",
+                    env.data.ctrl[env.thrust_act],
+                    env.data.ctrl[env.yaw_act],
+                    env.data.ctrl[env.pitch_act])
+
             step += 1
             
             # --- 1. ACTION (Passive or Random) ---
             # action = np.array([-1.0, 0.0, 0.0]) # Free fall (0 thrust)
-            action = env.action_space.sample() * 0.1 + np.array([-1, 0, 0]) # Low thrust random
+            # action = np.array([ 1.0, 0.0, 0.0], dtype=np.float32)  # 全油门直推
+            thrust_cmd, yaw_cmd, pitch_cmd = env.compute_landing_ctrl()
+
+            # 把“物理量”映射回 [-1,1] 动作
+            thrust_norm = 2.0 * (thrust_cmd / env.MAX_THRUST) - 1.0
+            yaw_norm    = np.clip(yaw_cmd   / env.MAX_GIMBAL, -1.0, 1.0)
+            pitch_norm  = np.clip(pitch_cmd / env.MAX_GIMBAL, -1.0, 1.0)
+
+            action = np.array([thrust_norm, yaw_norm, pitch_norm], dtype=np.float32)
 
             # --- 2. STEP ---
             obs, reward, done, truncated, info = env.step(action)

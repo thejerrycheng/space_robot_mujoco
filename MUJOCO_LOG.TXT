@@ -103,3 +103,15 @@ ERROR: mjv_updateSceneState: m->nu changed
 Wed Dec  3 23:26:35 2025
 ERROR: mjv_updateSceneState: m->nu changed
 
+Sat Dec  6 18:21:00 2025
+WARNING: Nan, Inf or huge value in QACC at DOF 6. The simulation is unstable. Time = 7.0100.
+
+Sat Dec  6 18:21:22 2025
+WARNING: Nan, Inf or huge value in QACC at DOF 6. The simulation is unstable. Time = 7.0100.
+
+Sat Dec  6 19:03:02 2025
+WARNING: Nan, Inf or huge value in QPOS at DOF 3. The simulation is unstable. Time = 0.0000.
+
+Sat Dec  6 19:03:25 2025
+WARNING: Nan, Inf or huge value in QPOS at DOF 3. The simulation is unstable. Time = 0.0000.
+
