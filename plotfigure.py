@@ -183,7 +183,7 @@ def plot_unified_analysis(history, episode_num, model_name, save_dir):
         return 2 * (x - x_min) / (x_max - x_min) - 1  # scale → [-1, 1]
 
     # thrust 已经是 normalized，可直接使用
-    thrust_norm = thrust  
+    thrust_norm = normalize(thrust) 
 
     # gimbal 两个通道：yaw = gimbal[:,0], pitch = gimbal[:,1]
     pitch_norm = normalize(gimbal[:, 1])
