@@ -81,7 +81,7 @@ class RocketLandingEnv(gym.Env):
         self.START_FUEL = 0.5 * self.DRY_MASS 
         TOTAL_MASS = self.DRY_MASS + self.START_FUEL
         
-        self.ISP = 250.0
+        self.ISP = 400.0
         self.G0 = 9.81  
         self.DT = self.model.opt.timestep
 
@@ -91,12 +91,12 @@ class RocketLandingEnv(gym.Env):
 
         # --- TASK CONSTANTS (FIXED) ---
         self.TARGET_POS_WORLD = np.array([0.0, 0.0, 0.0])
-        self.START_POS_FIXED  = np.array([100.0, 0.0, 500.0])
-        self.INITIAL_SPEED    = 3.0 
+        self.START_POS_FIXED  = np.array([500.0, 0.0, 500.0])
+        self.INITIAL_SPEED    = 3.0
         self.PITCH_DOWN_DEG   = 0
         self.LANDING_Z = 0.5 
         
-        self.MAX_STEPS = 3000
+        self.MAX_STEPS = 3800
         
         self.MAX_LATERAL_DIST = 10000.0 
         self.MAX_VELOCITY = 10000.0     
@@ -203,31 +203,53 @@ class RocketLandingEnv(gym.Env):
         z_target = getattr(self, "LANDING_Z", 0.5)
         h = max(z - z_target, 0.0)       # 离着陆面的高度
 
+        # # 1.1 目标下降速度 vz_ref(h)
+        # if h > 300.0:
+        #     vz_ref = -35.0
+        # elif h > 200.0:
+        #     vz_ref = -25.0
+        # elif h > 120.0:
+        #     vz_ref = -20.0
+        # elif h > 60.0:
+        #     vz_ref = -8.0
+        # elif h > 20.0:
+        #     vz_ref = -4.0 * (h / 20.0)      # 20m -> -4, 0m -> 0
+        # else:
+        #     vz_ref = -1.5 * (h / 20.0)      # 20m -> -1.5, 0m -> 0
         # 1.1 目标下降速度 vz_ref(h)
         if h > 300.0:
-            vz_ref = -35.0
+            vz_ref = -25.0          # 原来 -35，稍微温和一点
         elif h > 200.0:
-            vz_ref = -25.0
+            vz_ref = -18.0          # 原来 -25
         elif h > 120.0:
-            vz_ref = -20.0
+            vz_ref = -10.0          # 原来 -20
         elif h > 60.0:
-            vz_ref = -8.0
+            vz_ref = -10.0         # 原来 -8
         elif h > 20.0:
-            vz_ref = -4.0 * (h / 20.0)      # 20m -> -4, 0m -> 0
+            vz_ref =  -5.0 * (h / 20.0)   # 20m -> -3, 0m -> 0
         else:
-            vz_ref = -1.5 * (h / 20.0)      # 20m -> -1.5, 0m -> 0
+            vz_ref = -1.0 * (h / 20.0)   # 20m -> -1, 0m -> 0
 
         # 1.2 速度环
-        K_v_far  = 0.6
-        K_v_near = 1.0
-        alpha = np.clip(h / 100.0, 0.0, 1.0)
+        # K_v_far  = 0.6
+        # K_v_near = 1.0
+        # alpha = np.clip(h / 100.0, 0.0, 1.0)
+        # K_v = K_v_near + (K_v_far - K_v_near) * alpha
+        
+        K_v_far  = 2    # 高空小一点，避免抖
+        K_v_near = 1    # 近地面大一点，收尾更准
+        alpha = np.clip(h / 150.0, 0.0, 1.0)   # 过渡距离稍拉长一点
         K_v = K_v_near + (K_v_far - K_v_near) * alpha
+
 
         a_z_des = K_v * (vz_ref - vz)
 
-        # 限制最大上下加速度
-        a_z_up_max   = 3.0 * g
-        a_z_down_max = 0.5 * g
+        # # 限制最大上下加速度
+        # a_z_up_max   = 3.0 * g
+        # a_z_down_max = 0.5 * g
+        a_z_up_max   = 5.0 * g    # 刹车能力略小于 2g，避免太猛
+        a_z_down_max = 0.3 * g    # 向下加速略放宽一点
+
         a_z_des = np.clip(a_z_des, -a_z_down_max, a_z_up_max)
 
         # 1.3 推力
@@ -279,6 +301,8 @@ class RocketLandingEnv(gym.Env):
         scale = max(alt_scale, vz_scale)
 
         pitch_cmd_local *= scale
+        bias = -0.002 * pos[0]
+        pitch_cmd_local += bias
 
         # 最后做一次限幅（防止溢出）
         pitch_cmd = float(np.clip(pitch_cmd_local, -gimbal_limit, gimbal_limit))

@@ -71,7 +71,7 @@ Here is the complete XML code for the environment: -->
     <geom name="landing_ring"
           type="cylinder"
           pos="0 0 0"
-          size="50 1"
+          size="80 3"
           rgba="0.2 0.8 0.2 0.8"
           material="target_ring"
           contype="1" conaffinity="1"/>
