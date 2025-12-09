@@ -1,0 +1,64 @@
+<mujoco model="thrust_test">
+
+  <option timestep="0.002" gravity="0 0 -9.81" integrator="RK4"/>
+  <size njmax="1000" nconmax="200"/>
+
+  <default>
+    <geom rgba="0.8 0.8 0.8 1" contype="1" conaffinity="1" condim="3" friction="0.8 0.1 0.1"/>
+    <joint armature="0.001" damping="0.1"/>
+    <motor ctrlrange="-20 20" ctrllimited="true"/>
+  </default>
+
+  <worldbody>
+    <!-- ground -->
+    <geom name="ground" type="plane" pos="0 0 0" size="5 5 1" rgba="0.2 0.25 0.3 1"/>
+
+    <!-- Rocket with free joint -->
+    <body name="rocket" pos="0 0 1.2">
+      <freejoint name="free"/>
+      <!-- 10 kg body, simple inertia -->
+      <inertial pos="0 0 0" mass="10" diaginertia="0.25 0.25 0.05"/>
+
+      <!-- visual hull -->
+      <geom name="hull" type="capsule" fromto="0 0 -0.9  0 0 0.9" size="0.12" rgba="0.9 0.9 0.95 1"/>
+
+      <!-- fins (visual) -->
+      <geom type="box" pos="0.00  0.12 -0.85" size="0.02 0.12 0.02" rgba="0.7 0.7 0.9 1"/>
+      <geom type="box" pos="0.00 -0.12 -0.85" size="0.02 0.12 0.02" rgba="0.7 0.7 0.9 1"/>
+      <geom type="box" pos="0.12  0.00 -0.85" size="0.12 0.02 0.02" rgba="0.7 0.7 0.9 1"/>
+      <geom type="box" pos="-0.12 0.00 -0.85" size="0.12 0.02 0.02" rgba="0.7 0.7 0.9 1"/>
+
+      <!-- Gimballed engine at bottom center -->
+      <body name="engine" pos="0 0 -0.95">
+        <!-- moving body must have inertial -->
+        <inertial pos="0 0 0" mass="1.0" diaginertia="0.01 0.01 0.01"/>
+
+        <!-- 2-DoF vectoring -->
+        <joint name="gimbal_pitch" type="hinge" axis="1 0 0" range="-10 10" damping="0.02" limited="true"/>
+        <joint name="gimbal_yaw"   type="hinge" axis="0 1 0" range="-10 10" damping="0.02" limited="true"/>
+
+        <!-- nozzle (visual) -->
+        <!-- <geom type="cone" pos="0 0 0" size="0.08 0.12" rgba="0.6 0.6 0.7 1"/> -->
+
+        <!-- thruster site; +Z is thrust direction -->
+        <site name="thrust_site" pos="0 0 0" size="0.01" rgba="1 0.2 0.2 1"/>
+      </body>
+    </body>
+  </worldbody>
+
+  <actuator>
+    <!-- Force-at-site actuator: control is thrust [N] along site +Z -->
+    <general name="thrust" site="thrust_site"
+             gear="0 0 1   0 0 0"
+             ctrllimited="true" ctrlrange="0 3000" />
+    <!-- Gimbal motors (apply torques to hinges) -->
+    <motor name="gimbal_pitch_motor" joint="gimbal_pitch"/>
+    <motor name="gimbal_yaw_motor"   joint="gimbal_yaw"/>
+  </actuator>
+
+  <sensor>
+    <actuatorfrc name="thrust_readback" actuator="thrust"/>
+    <velocimeter name="linvel" site="thrust_site"/>
+    <accelerometer name="accel" site="thrust_site"/>
+  </sensor>
+</mujoco>

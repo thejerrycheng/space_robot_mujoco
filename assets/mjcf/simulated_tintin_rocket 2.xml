@@ -1,0 +1,84 @@
+<mujoco model="tintin_rocket">
+  <compiler angle="degree" coordinate="local"/>
+  <option timestep="0.002" gravity="0 0 -9.81" integrator="RK4"/>
+
+  <visual>
+    <map znear="0.001" zfar="200"/>
+    <quality shadowsize="4096"/>
+    <headlight ambient="0.3 0.3 0.3" diffuse="0.7 0.7 0.7"/>
+  </visual>
+
+  <default>
+    <!-- General contact feel -->
+    <geom friction="1.0 0.1 0.01" contype="1" conaffinity="1"/>
+    <!-- Stiff & well-damped hinges for gimbal -->
+    <joint limited="true" range="-90 90" damping="5.0" armature="0.0005"/>
+    <!-- Visuals -->
+    <site size="0.02" rgba="0.1 0.7 1 1"/>
+  </default>
+
+  <worldbody>
+    <!-- Ground -->
+    <geom name="ground" type="plane" size="50 50 1" pos="0 0 0" rgba="0.7 0.7 0.72 1"/>
+
+    <!-- ===================== ROCKET BODY ===================== -->
+    <!-- Main body height ~2.0 m, radius ~0.25 m; base at z=0.25 so legs touch ground -->
+    <body name="rocket" pos="0 0 0.25">
+      <!-- Smooth body as a vertical capsule along +Z -->
+      <geom name="hull" type="capsule" fromto="0 0 0.25  0 0 2.25" size="0.25" rgba="0.9 0.1 0.1 1" density="600"/>
+
+      <!-- ===================== LANDING LEGS (3x, fixed) ===================== -->
+      <!-- Simple splayed capsules; tips are near z=0 -->
+      <!-- Leg length ~0.6 m, thickness ~0.05 m, splay angle ~25 deg -->
+      <!-- Leg A (0 deg) -->
+      <geom name="legA_root" type="sphere" size="0.06" pos="0.25 0 0.35" rgba="0.9 0.9 0.9 1"/>
+      <geom name="legA" type="capsule"
+            fromto="0.25 0 0.35   0.70 0 0.10"
+            size="0.05" rgba="0.85 0.85 0.9 1" density="500"/>
+      <!-- Leg B (120 deg) -->
+      <geom name="legB_root" type="sphere" size="0.06" pos="-0.125 0.2165 0.35" rgba="0.9 0.9 0.9 1"/>
+      <geom name="legB" type="capsule"
+            fromto="-0.125 0.2165 0.35   -0.35 0.6062 0.10"
+            size="0.05" rgba="0.85 0.85 0.9 1" density="500"/>
+      <!-- Leg C (240 deg) -->
+      <geom name="legC_root" type="sphere" size="0.06" pos="-0.125 -0.2165 0.35" rgba="0.9 0.9 0.9 1"/>
+      <geom name="legC" type="capsule"
+            fromto="-0.125 -0.2165 0.35   -0.35 -0.6062 0.10"
+            size="0.05" rgba="0.85 0.85 0.9 1" density="500"/>
+
+      <!-- ===================== GIMBALED ENGINE ===================== -->
+      <!-- Roll hinge (X), then Pitch hinge (Y); nozzle points along +Z(nozzle) -->
+      <body name="gimbal_roll" pos="0 0 0.30">
+        <joint name="gim_roll" type="hinge" axis="1 0 0" range="-15 15"/>
+
+        <body name="gimbal_pitch" pos="0 0 0">
+          <joint name="gim_pitch" type="hinge" axis="0 1 0" range="-15 15"/>
+
+          <!-- Nozzle body & visuals (short capsule); +Z is thrust direction -->
+          <body name="nozzle" pos="0 0 0">
+            <geom name="nozzle_geom" type="capsule" fromto="0 0 0   0 0 -0.25"
+                  size="0.07" rgba="0.2 0.2 0.2 1" density="300"/>
+            <!-- Thrust application site at nozzle throat; +Z(nozzle) upward into rocket -->
+            <site name="thrust_site" pos="0 0 0" size="0.03" rgba="0.2 0.8 1 1"/>
+          </body>
+        </body>
+      </body>
+
+      <!-- Convenience marker near base -->
+      <site name="base_center" pos="0 0 0.25" size="0.02"/>
+    </body>
+  </worldbody>
+
+  <!-- ===================== ACTUATORS ===================== -->
+  <actuator>
+    <!-- Gimbal position control: commands are desired angles (radians at runtime) -->
+    <position name="a_gim_roll"  joint="gim_roll"  kp="2000" ctrllimited="true" ctrlrange="-15 15"/>
+    <position name="a_gim_pitch" joint="gim_pitch" kp="2000" ctrllimited="true" ctrlrange="-15 15"/>
+
+    <!-- Thruster: apply pure force along +Z of thrust_site (Newtons = control) -->
+    <!-- Using a general actuator on a SITE. gear = [torque_xyz  force_xyz] in site frame.
+         Here we apply NO torque and a +Z force only. -->
+    <general name="thrust" site="thrust_site" biastype="affine"
+             gainprm="1" gear="0 0 0  0 0 1" ctrllimited="true" ctrlrange="0 20000"/>
+  </actuator>
+</mujoco>

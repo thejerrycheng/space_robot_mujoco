@@ -1,0 +1,41 @@
+# Python cache
+__pycache__/
+*.pyc
+
+# Temporary or duplicated files
+* 2.py
+* 2.png
+* 2.html
+* 2.yml
+* 2.md
+
+# MuJoCo, RL, and experiment outputs
+runs/
+logs/
+models/
+data/
+paper_documents/
+paper_figures/
+test_*/
+*.png
+*.jpg
+*.gif
+*.mp4
+*.csv
+*.npy
+*.npz
+*.pth
+*.onnx
+
+# Compiled or generated artifacts
+*.obj
+
+# Editor configs
+.vscode/
+.DS_Store
+
+# MATLAB generated files
+MATLAB/
+
+# big downloaded repos
+unitree_rl_gym-main*/

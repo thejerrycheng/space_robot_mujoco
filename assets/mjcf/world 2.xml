@@ -1,0 +1,70 @@
+<mujoco model="space_world">
+
+    <!-- Visual goal marker (non-colliding); we'll move it from Python -->
+    <site name="goal_site" pos="0 0 0" size="1.0" rgba="0 1 0 0.5" />
+
+  <compiler angle="radian" coordinate="local"
+            meshdir="../meshes" texturedir="../textures"/>
+  <!-- Lunar gravity -->
+  <!-- <option timestep="0.01" gravity="0 0 -1.62"/> -->
+  <option timestep="0.01" gravity="0 0 -1.62"/>
+
+  <!-- Global: stiffer, thinner soft contacts -->
+  <default>
+    <!-- solref = [timeconst dampratio], smaller timeconst -> stiffer contact -->
+    <geom margin="0" solref="0.002 1" solimp="0.99 0.995 0.0005" condim="3"/>
+  </default>
+
+  <!-- Pair-specific: rocket <-> terrain : zero margin, ultra-thin soft zone -->
+  <contact>
+    <pair geom1="rocket_mesh" geom2="moon_ground"
+          margin="0"
+          solref="0.001 1"
+          solimp="0.999 0.9995 0.0001"/>
+  </contact>
+
+  <asset>
+    <mesh name="tintin_mesh"  file="tintin_rocket.obj"  scale="1 1 1"/>
+    <mesh name="moon_terrain" file="moon_terrain.obj"   scale="1 1 1"/>
+    <!-- flame materials -->
+    <material name="flame_core_mat"  rgba="1.0 0.95 0.75 0.95" emission="0.8" specular="0.05" shininess="0.2"/>
+    <material name="flame_plume_mat" rgba="1.0 0.55 0.15 0.35" emission="0.4" specular="0.0"  shininess="0.05"/>
+    <material name="rocket_red" rgba="0.85 0.12 0.12 1"/>
+
+  </asset>
+
+  <worldbody>
+    <!-- Terrain (Y-up -> Z-up) -->
+    <body name="moon_frame" euler="1.5708 0 0">
+      <geom name="moon_ground" type="mesh" mesh="moon_terrain"
+            contype="1" conaffinity="1" condim="3"
+            friction="1.1 0.005 0.0001"
+            rgba="0.65 0.62 0.58 1"/>
+    </body>
+
+    <site name="origin_marker" pos="0 0 0" size="0.1" rgba="1 0 1 1"/>
+
+    <!-- Rocket (Y-up -> Z-up) -->
+    <body name="rocket_root" pos="0 0 100" euler="1.5708 0 0">
+        <joint name="free" type="free"/>
+
+        <!-- Colliding triangle mesh -->
+        <geom name="rocket_mesh" type="mesh" mesh="tintin_mesh" material="rocket_red"
+                contype="1" conaffinity="1" condim="3"
+                friction="1.1 0.005 0.0001"
+                mass="50"/>
+
+        <!-- flame visuals (non-colliding). MuJoCo supports: sphere, capsule, ellipsoid, box, cylinder, mesh, hfield/plane -->
+        <geom name="flame_core"  type="ellipsoid" pos="0 0 32" size="0.05 0.05 0.10"
+            material="flame_core_mat"  contype="0" conaffinity="0" rgba="1 0.9 0.6 0.0"/>
+        <!-- cylinder size = [radius half_length *unused*] -->
+        <geom name="flame_plume" type="cylinder"  pos="0 0 32" size="0.08 0.20"
+            material="flame_plume_mat" contype="0" conaffinity="0" rgba="1 0.5 0.1 0.0"/>
+
+
+        <!-- Anchor used by scripts for thrust/flame; invisible -->
+        <site name="engine_site" pos="0 0 0.32" size="0.01" rgba="0 0 0 0"/>
+    </body>
+
+  </worldbody>
+</mujoco>

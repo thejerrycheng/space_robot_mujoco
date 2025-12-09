@@ -1,0 +1,434 @@
+"""
+TintinLunarEnv — MuJoCo + Gymnasium environment for powered descent
+
+Action (agent input):
+    a = [T, theta_p, theta_r]
+        T        : thrust magnitude [N]
+        theta_p  : gimbal pitch   [rad]
+        theta_r  : gimbal roll    [rad]
+
+Observation (env output):
+    obs = [p_x, p_y, p_z, v_x, v_y, v_z, d]
+        p  : CoM position of the rocket body in world frame [m]
+        v  : CoM linear velocity in world frame [m/s]
+        d  : Euclidean distance to the target pad [m]
+
+Notes
+-----
+• Variable mass is modeled by updating model.body_mass[rocket_body_id] each step based on
+  m_dot = -T / (Isp * g0). MuJoCo allows modifying body mass at runtime; we call mj_forward
+  after the change for consistency.
+• Thrust is applied at a nozzle site as a world-frame force F and a world-frame torque τ = r × F,
+  where r is from body COM to nozzle site.
+• Gimbal angles define the body-frame thrust direction: t^B = R_x(theta_p) * R_z(theta_r) * e_z.
+  If you prefer pitch–yaw (x, y) instead of pitch–roll (x, z), change _thrust_dir_body().
+• This file assumes your MJCF has a body named `rocket_body` (default "rocket") and a site named
+  `nozzle_site` (default "nozzle_site") located at the nozzle location relative to the rocket body.
+
+Usage
+-----
+    env = TintinLunarEnv(
+        xml_path="path/to/your_model.xml",
+        rocket_body_name="rocket",
+        nozzle_site_name="nozzle_site",
+        render_mode=None,
+    )
+    obs, info = env.reset()
+    for _ in range(1000):
+        action = env.action_space.sample()
+        obs, reward, terminated, truncated, info = env.step(action)
+        if terminated or truncated:
+            obs, info = env.reset()
+
+Make sure your XML defines lunar gravity (-1.62 m/s^2 in z) or set env.override_gravity.
+"""
+from __future__ import annotations
+
+import os
+from typing import Optional, Tuple
+
+import numpy as np
+import gymnasium as gym
+from gymnasium import spaces
+import mujoco
+
+
+class TintinLunarEnv(gym.Env):
+    metadata = {"render_modes": ["human", "rgb_array"], "render_fps": 60}
+
+    def __init__(
+        self,
+        xml_path: str,
+        rocket_body_name: str = "rocket",
+        nozzle_site_name: str = "nozzle_site",
+        render_mode: Optional[str] = None,
+        frame_skip: int = 5,
+        # Action limits
+        T_min: float = 0.0,
+        T_max: float = 8000.0,
+        gimbal_max: float = np.deg2rad(12.0),  # half-angle cone limit
+        use_gimbal_cone: bool = True,
+        # Mass / propellant
+        m_dry: float = 120.0,
+        m_prop0: float = 80.0,
+        Isp: float = 300.0,  # s
+        g0: float = 9.80665,  # m/s^2
+        # Target pad
+        target_pos: Tuple[float, float, float] = (0.0, 0.0, 0.0),
+        # Reward weights
+        w_d: float = 1.0,
+        w_v: float = 0.25,
+        w_T: float = 1e-3,
+        w_gim: float = 0.02,
+        success_bonus: float = 100.0,
+        # Success tolerances
+        pos_tol: float = 1.0,
+        v_xy_tol: float = 1.0,
+        v_z_tol: float = 1.0,
+        tilt_tol: float = np.deg2rad(10.0),
+        max_episode_steps: int = 800,
+        override_gravity: Optional[Tuple[float, float, float]] = None,
+    ):
+        super().__init__()
+        assert os.path.exists(xml_path), f"XML not found: {xml_path}"
+
+        self.model = mujoco.MjModel.from_xml_path(xml_path)
+        self.data = mujoco.MjData(self.model)
+
+        # Renderer (on-demand)
+        self.render_mode = render_mode
+        self._renderer = None
+        if render_mode == "human":
+            self._renderer = mujoco.viewer.launch_passive(self.model, self.data)
+        elif render_mode == "rgb_array":
+            self._make_offscreen_renderer()
+
+        # Component names
+        self.rocket_body_name = rocket_body_name
+        self.nozzle_site_name = nozzle_site_name
+        self.rocket_body_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_BODY, rocket_body_name)
+        self.nozzle_site_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_SITE, nozzle_site_name)
+        assert self.rocket_body_id >= 0, "rocket_body_name not found in model"
+        assert self.nozzle_site_id >= 0, "nozzle_site_name not found in model"
+
+        # Physics params
+        self.frame_skip = int(frame_skip)
+        self.override_gravity = override_gravity
+        if override_gravity is not None:
+            self.model.opt.gravity[:] = np.array(override_gravity, dtype=float)
+
+        # Thrust / gimbal limits
+        self.T_min = float(T_min)
+        self.T_max = float(T_max)
+        self.gimbal_max = float(gimbal_max)
+        self.use_gimbal_cone = bool(use_gimbal_cone)
+
+        # Mass / propellant
+        self.Isp = float(Isp)
+        self.g0 = float(g0)
+        self.m_dry = float(m_dry)
+        self.m_prop0 = float(m_prop0)
+        self.m0 = self.m_dry + self.m_prop0
+
+        # Target
+        self.target_pos = np.asarray(target_pos, dtype=float)
+
+        # Reward weights & success tolerances
+        self.w_d = float(w_d)
+        self.w_v = float(w_v)
+        self.w_T = float(w_T)
+        self.w_gim = float(w_gim)
+        self.success_bonus = float(success_bonus)
+        self.pos_tol = float(pos_tol)
+        self.v_xy_tol = float(v_xy_tol)
+        self.v_z_tol = float(v_z_tol)
+        self.tilt_tol = float(tilt_tol)
+        self.max_episode_steps = int(max_episode_steps)
+        self._elapsed_steps = 0
+
+        # Spaces
+        # Actions are in PHYSICAL units; you may prefer a normalized Box and map internally.
+        low = np.array([self.T_min, -self.gimbal_max, -self.gimbal_max], dtype=np.float32)
+        high = np.array([self.T_max, +self.gimbal_max, +self.gimbal_max], dtype=np.float32)
+        self.action_space = spaces.Box(low=low, high=high, dtype=np.float32)
+
+        # Observation: [p(3), v(3), d(1)]
+        obs_high = np.array([np.inf] * 7, dtype=np.float32)
+        self.observation_space = spaces.Box(low=-obs_high, high=obs_high, dtype=np.float32)
+
+        # Internal state for variable mass
+        self.mass = self.m0  # current total mass of rocket body
+        # Set initial mass in model for the rocket body (assumes single dominant body)
+        self._set_body_mass(self.mass)
+        mujoco.mj_forward(self.model, self.data)
+
+    # ---------- Rendering helpers ----------
+    def _make_offscreen_renderer(self):
+        # Create an offscreen context for rgb_array rendering
+        self._offscreen = mujoco.Renderer(self.model, 640, 480)
+
+    def render(self):
+        if self.render_mode == "human" and self._renderer is not None:
+            # Passive viewer updates on its own; step() animates the scene
+            return None
+        elif self.render_mode == "rgb_array":
+            self._offscreen.update_scene(self.data)
+            return self._offscreen.render()
+        return None
+
+    # ---------- Core env API ----------
+    def reset(self, *, seed: Optional[int] = None, options: Optional[dict] = None):
+        super().reset(seed=seed)
+        self._elapsed_steps = 0
+
+        # Reset sim
+        mujoco.mj_resetData(self.model, self.data)
+
+        # Randomize initial state (position, velocity, slight tilt)
+        rng = np.random.default_rng(seed)
+        p0 = np.array([
+            rng.uniform(-200.0, 200.0),
+            rng.uniform(-200.0, 200.0),
+            rng.uniform(150.0, 250.0),
+        ])
+        v0 = rng.uniform(-10.0, 10.0, size=3)
+
+        # Position/velocity of the rocket body's root free joint (assumed)
+        # We locate the free joint that controls the rocket body (first free joint is common).
+        free_jnt_id = self._find_free_joint_of_body(self.rocket_body_id)
+        assert free_jnt_id is not None, "Rocket body must be attached to a free joint"
+        qpos_adr = self.model.jnt_qposadr[free_jnt_id]
+        qvel_adr = self.model.jnt_dofadr[free_jnt_id]
+
+        # qpos layout for free joint: [x, y, z, qw, qx, qy, qz]
+        self.data.qpos[qpos_adr + 0 : qpos_adr + 3] = p0
+        self.data.qpos[qpos_adr + 3 : qpos_adr + 7] = self._quat_from_small_tilt(rng, max_tilt=np.deg2rad(8.0))
+
+        # qvel layout for free joint: [vx, vy, vz, wx, wy, wz]
+        self.data.qvel[qvel_adr + 0 : qvel_adr + 3] = v0
+        self.data.qvel[qvel_adr + 3 : qvel_adr + 6] = rng.uniform(-0.5, 0.5, size=3)
+
+        # Reset mass/propellant
+        self.mass = self.m0
+        self._set_body_mass(self.mass)
+
+        mujoco.mj_forward(self.model, self.data)
+
+        obs = self._get_obs()
+        info = {"target_pos": self.target_pos.copy()}
+        return obs, info
+
+    def step(self, action: np.ndarray):
+        self._elapsed_steps += 1
+
+        # Parse & clamp action in physical units
+        T, theta_p, theta_r = np.asarray(action, dtype=float)
+        T = float(np.clip(T, self.T_min, self.T_max))
+        theta_p = float(np.clip(theta_p, -self.gimbal_max, self.gimbal_max))
+        theta_r = float(np.clip(theta_r, -self.gimbal_max, self.gimbal_max))
+
+        # (Optional) project to a circular gimbal cone of radius gimbal_max
+        if self.use_gimbal_cone:
+            r = np.hypot(theta_p, theta_r)
+            if r > self.gimbal_max and r > 1e-9:
+                scale = self.gimbal_max / r
+                theta_p *= scale
+                theta_r *= scale
+
+        # Compute thrust direction in BODY frame, then rotate to WORLD
+        t_dir_B = self._thrust_dir_body(theta_p, theta_r)  # shape (3,)
+        R_WB = self._body_rot_world(self.rocket_body_id)   # 3x3
+        t_dir_W = R_WB @ t_dir_B
+
+        # Force at nozzle in world
+        F_W = T * t_dir_W
+
+        # Site/world positions
+        nozzle_pos_W = self.data.site_xpos[self.nozzle_site_id].copy()  # 3,
+        body_com_W = self.data.xipos[self.rocket_body_id].copy()        # 3,
+        r_W = nozzle_pos_W - body_com_W
+
+        # Torque τ = r × F (world)
+        tau_W = np.cross(r_W, F_W)
+
+        # Apply wrench to the rocket body this step
+        self._clear_xfrc()
+        self.data.xfrc_applied[self.rocket_body_id, 0:3] = F_W
+        self.data.xfrc_applied[self.rocket_body_id, 3:6] = tau_W
+
+        # Update mass from propellant flow BEFORE stepping
+        m_dot = -T / (self.Isp * self.g0)
+        dt = self.model.opt.timestep * self.frame_skip
+        self.mass = max(self.m_dry, self.mass + m_dot * dt)
+        self._set_body_mass(self.mass)
+        mujoco.mj_forward(self.model, self.data)
+
+        # Integrate
+        for _ in range(self.frame_skip):
+            mujoco.mj_step(self.model, self.data)
+
+        # Clear external forces so they don't persist accidentally
+        self._clear_xfrc()
+
+        # Observation, reward, termination
+        obs = self._get_obs()
+        reward = self._compute_reward(T, theta_p, theta_r)
+        terminated = self._check_success() or self._check_crash()
+        truncated = self._elapsed_steps >= self.max_episode_steps or (self.mass <= self.m_dry and self._hover_infeasible())
+
+        info = {
+            "mass": self.mass,
+            "target_pos": self.target_pos.copy(),
+            "pad_error": float(np.linalg.norm(self._pos() - self.target_pos)),
+        }
+
+        # Optionally animate in human viewer
+        if self.render_mode == "human" and self._renderer is not None:
+            self._renderer.sync()
+
+        return obs, float(reward), bool(terminated), bool(truncated), info
+
+    # ---------- Observation / Reward / Termination ----------
+    def _get_obs(self) -> np.ndarray:
+        p = self._pos()
+        v = self._vel()
+        d = np.linalg.norm(p - self.target_pos)
+        return np.array([p[0], p[1], p[2], v[0], v[1], v[2], d], dtype=np.float32)
+
+    def _compute_reward(self, T: float, theta_p: float, theta_r: float) -> float:
+        p = self._pos()
+        v = self._vel()
+        d = np.linalg.norm(p - self.target_pos)
+        r = -self.w_d * d - self.w_v * np.linalg.norm(v) - self.w_T * T - self.w_gim * (theta_p ** 2 + theta_r ** 2)
+        if self._check_success():
+            r += self.success_bonus
+        return float(r)
+
+    def _check_success(self) -> bool:
+        p = self._pos()
+        v = self._vel()
+        # Upright check using body z-axis vs world z-axis
+        z_world = np.array([0.0, 0.0, 1.0])
+        R_WB = self._body_rot_world(self.rocket_body_id)
+        body_z = R_WB[:, 2]
+        tilt = np.arccos(np.clip(np.dot(body_z, z_world), -1.0, 1.0))
+
+        pos_ok = np.linalg.norm(p - self.target_pos) <= self.pos_tol
+        v_xy_ok = np.linalg.norm(v[:2]) <= self.v_xy_tol
+        v_z_ok = abs(v[2]) <= self.v_z_tol
+        tilt_ok = tilt <= self.tilt_tol
+        on_ground = self._on_ground()
+        return bool(pos_ok and v_xy_ok and v_z_ok and tilt_ok and on_ground)
+
+    def _check_crash(self) -> bool:
+        # If below ground with large speed or big tilt, consider crash (MuJoCo contact can be inspected too)
+        p = self._pos()
+        v = self._vel()
+        if p[2] < -0.05 and np.linalg.norm(v) > 2.0:
+            return True
+        # Excessive tilt
+        z_world = np.array([0.0, 0.0, 1.0])
+        R_WB = self._body_rot_world(self.rocket_body_id)
+        body_z = R_WB[:, 2]
+        tilt = np.arccos(np.clip(np.dot(body_z, z_world), -1.0, 1.0))
+        if tilt > np.deg2rad(60.0):
+            return True
+        return False
+
+    def _hover_infeasible(self) -> bool:
+        # Rough check: T_max < weight (no hover possible)
+        weight = self.mass * np.linalg.norm(self.model.opt.gravity)
+        return self.T_max < weight * 0.9  # margin
+
+    # ---------- Low-level helpers ----------
+    def _pos(self) -> np.ndarray:
+        return self.data.xipos[self.rocket_body_id].copy()
+
+    def _vel(self) -> np.ndarray:
+        return self.data.cvel[self.rocket_body_id, 3:6].copy()  # linear vel of body frame in world
+
+    def _body_rot_world(self, body_id: int) -> np.ndarray:
+        # data.xmat stores row-major 3x3 for each body
+        R = self.data.xmat[body_id].reshape(3, 3).copy()
+        return R
+
+    def _thrust_dir_body(self, theta_p: float, theta_r: float) -> np.ndarray:
+        # Pitch (x-axis), Roll (z-axis). Start with body +Z axis.
+        cp, sp = np.cos(theta_p), np.sin(theta_p)
+        cr, sr = np.cos(theta_r), np.sin(theta_r)
+        # R_x(theta_p)
+        R_x = np.array([[1, 0, 0], [0, cp, -sp], [0, sp, cp]])
+        # R_z(theta_r)
+        R_z = np.array([[cr, -sr, 0], [sr, cr, 0], [0, 0, 1]])
+        # Direction = R_x * R_z * e_z
+        e_z = np.array([0.0, 0.0, 1.0])
+        dir_b = R_x @ (R_z @ e_z)
+        # Ensure unit length (numerical safety)
+        dir_b /= (np.linalg.norm(dir_b) + 1e-12)
+        return dir_b
+
+    def _set_body_mass(self, mass: float):
+        # Assume rocket_body is a single dynamic body representing most of the mass.
+        self.model.body_mass[self.rocket_body_id] = float(mass)
+
+    def _clear_xfrc(self):
+        self.data.xfrc_applied[self.rocket_body_id, :] = 0.0
+
+    def _find_free_joint_of_body(self, body_id: int) -> Optional[int]:
+        # Return the joint id of the free joint attached to this body (if any)
+        # Iterate all joints and find one whose body id matches and type is free
+        for j in range(self.model.njnt):
+            if self.model.jnt_bodyid[j] == body_id and self.model.jnt_type[j] == mujoco.mjtJoint.mjJNT_FREE:
+                return j
+        # Fall back: the first free joint in model (typical root)
+        for j in range(self.model.njnt):
+            if self.model.jnt_type[j] == mujoco.mjtJoint.mjJNT_FREE:
+                return j
+        return None
+
+    @staticmethod
+    def _quat_from_small_tilt(rng: np.random.Generator, max_tilt: float) -> np.ndarray:
+        # Sample a small tilt axis in xy-plane and angle in [-max_tilt, max_tilt]
+        axis_xy = rng.normal(size=2)
+        norm = np.linalg.norm(axis_xy) + 1e-12
+        axis_xy /= norm
+        angle = rng.uniform(-max_tilt, max_tilt)
+        # Axis in 3D (tilt around x/y only)
+        axis = np.array([axis_xy[0], axis_xy[1], 0.0])
+        s = np.sin(angle / 2.0)
+        q = np.array([np.cos(angle / 2.0), axis[0] * s, axis[1] * s, axis[2] * s])
+        # Normalize
+        q /= (np.linalg.norm(q) + 1e-12)
+        return q
+
+
+# Optional: simple standalone test
+if __name__ == "__main__":
+    import argparse
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument("xml", help="Path to MuJoCo XML")
+    parser.add_argument("--render", action="store_true")
+    args = parser.parse_args()
+
+    env = TintinLunarEnv(
+        xml_path=args.xml,
+        rocket_body_name="rocket",
+        nozzle_site_name="nozzle_site",
+        render_mode="human" if args.render else None,
+        override_gravity=(0.0, 0.0, -1.62),
+    )
+    obs, info = env.reset()
+    print("obs0:", obs)
+
+    for _ in range(200):
+        # random small thrust + small gimbal
+        a = np.array([
+            np.random.uniform(env.T_min, env.T_max),
+            np.random.uniform(-env.gimbal_max, env.gimbal_max),
+            np.random.uniform(-env.gimbal_max, env.gimbal_max),
+        ], dtype=np.float32)
+        obs, reward, term, trunc, info = env.step(a)
+        if term or trunc:
+            obs, info = env.reset()
+    print("Done.")

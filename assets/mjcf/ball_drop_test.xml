@@ -1,0 +1,132 @@
+<mujoco model="ball_drop_test">
+  <compiler angle="radian" coordinate="local"
+            meshdir="../meshes" texturedir="../textures"/>
+
+  <!-- Lunar gravity -->
+  <option timestep="0.01" gravity="0 0 -1.62"/>
+
+  <!-- Contact tuning: stiff & thin soft region, no visual hover gap -->
+  <default>
+    <!-- condim=3: two tangential + torsional friction; margin=0 removes air cushion -->
+    <geom margin="0" solref="0.002 1" solimp="0.99 0.995 0.0005" condim="3"
+          friction="1.1 0.005 0.0001"/>
+  </default>
+
+  <!-- Camera framing hint so the viewer starts wide -->
+  <visual>
+    <map fogstart="3" fogend="5" znear="0.01"/>
+  </visual>
+  <statistic extent="600" center="0 0 60"/>
+
+  <asset>
+    <!-- Your terrain mesh (authored Y-up) -->
+    <mesh name="moon_terrain" file="moon_terrain.obj" scale="1 1 1"/>
+    <material name="ball_mat" rgba="0.8 0.2 0.2 1"/>
+  </asset>
+
+  <worldbody>
+    <!-- Terrain frame: rotate Y-up -> Z-up (+90° about X) -->
+    <body name="moon_frame" euler="1.5708 0 0">
+      <geom name="moon_ground" type="mesh" mesh="moon_terrain"
+            contype="1" conaffinity="1" condim="3"
+            friction="1.1 0.005 0.0001"
+            rgba="0.65 0.62 0.58 1"/>
+    </body>
+
+    <!-- Debug origin marker -->
+    <site name="origin_marker" pos="0 0 0" size="0.2" rgba="1 0 1 1"/>
+
+    <!-- ====== BALL GRID (5x5), each a free body with a colliding sphere geom ====== -->
+    <!-- Settings -->
+    <!-- grid centers: x,y in {-60,-30,0,30,60}; z=120m above origin -->
+    <!-- radius=1.5m, density=500 kg/m^3 (~7t each), color red -->
+    <!-- All balls collide with ground and with each other -->
+    <!-- Row -60 -->
+    <body name="ball_m60_m60" pos="-60 -60 120">
+      <joint type="free"/>
+      <geom type="sphere" size="1.5" density="500"
+            contype="1" conaffinity="1" material="ball_mat"/>
+    </body>
+    <body name="ball_m60_m30" pos="-60 -30 120"><joint type="free"/>
+      <geom type="sphere" size="1.5" density="500" contype="1" conaffinity="1" material="ball_mat"/>
+    </body>
+    <body name="ball_m60_0" pos="-60 0 120"><joint type="free"/>
+      <geom type="sphere" size="1.5" density="500" contype="1" conaffinity="1" material="ball_mat"/>
+    </body>
+    <body name="ball_m60_30" pos="-60 30 120"><joint type="free"/>
+      <geom type="sphere" size="1.5" density="500" contype="1" conaffinity="1" material="ball_mat"/>
+    </body>
+    <body name="ball_m60_60" pos="-60 60 120"><joint type="free"/>
+      <geom type="sphere" size="1.5" density="500" contype="1" conaffinity="1" material="ball_mat"/>
+    </body>
+
+    <!-- Row -30 -->
+    <body name="ball_m30_m60" pos="-30 -60 120"><joint type="free"/>
+      <geom type="sphere" size="1.5" density="500" contype="1" conaffinity="1" material="ball_mat"/>
+    </body>
+    <body name="ball_m30_m30" pos="-30 -30 120"><joint type="free"/>
+      <geom type="sphere" size="1.5" density="500" contype="1" conaffinity="1" material="ball_mat"/>
+    </body>
+    <body name="ball_m30_0" pos="-30 0 120"><joint type="free"/>
+      <geom type="sphere" size="1.5" density="500" contype="1" conaffinity="1" material="ball_mat"/>
+    </body>
+    <body name="ball_m30_30" pos="-30 30 120"><joint type="free"/>
+      <geom type="sphere" size="1.5" density="500" contype="1" conaffinity="1" material="ball_mat"/>
+    </body>
+    <body name="ball_m30_60" pos="-30 60 120"><joint type="free"/>
+      <geom type="sphere" size="1.5" density="500" contype="1" conaffinity="1" material="ball_mat"/>
+    </body>
+
+    <!-- Row 0 -->
+    <body name="ball_0_m60" pos="0 -60 120"><joint type="free"/>
+      <geom type="sphere" size="1.5" density="500" contype="1" conaffinity="1" material="ball_mat"/>
+    </body>
+    <body name="ball_0_m30" pos="0 -30 120"><joint type="free"/>
+      <geom type="sphere" size="1.5" density="500" contype="1" conaffinity="1" material="ball_mat"/>
+    </body>
+    <body name="ball_0_0" pos="0 0 120"><joint type="free"/>
+      <geom type="sphere" size="1.5" density="500" contype="1" conaffinity="1" material="ball_mat"/>
+    </body>
+    <body name="ball_0_30" pos="0 30 120"><joint type="free"/>
+      <geom type="sphere" size="1.5" density="500" contype="1" conaffinity="1" material="ball_mat"/>
+    </body>
+    <body name="ball_0_60" pos="0 60 120"><joint type="free"/>
+      <geom type="sphere" size="1.5" density="500" contype="1" conaffinity="1" material="ball_mat"/>
+    </body>
+
+    <!-- Row 30 -->
+    <body name="ball_30_m60" pos="30 -60 120"><joint type="free"/>
+      <geom type="sphere" size="1.5" density="500" contype="1" conaffinity="1" material="ball_mat"/>
+    </body>
+    <body name="ball_30_m30" pos="30 -30 120"><joint type="free"/>
+      <geom type="sphere" size="1.5" density="500" contype="1" conaffinity="1" material="ball_mat"/>
+    </body>
+    <body name="ball_30_0" pos="30 0 120"><joint type="free"/>
+      <geom type="sphere" size="1.5" density="500" contype="1" conaffinity="1" material="ball_mat"/>
+    </body>
+    <body name="ball_30_30" pos="30 30 120"><joint type="free"/>
+      <geom type="sphere" size="1.5" density="500" contype="1" conaffinity="1" material="ball_mat"/>
+    </body>
+    <body name="ball_30_60" pos="30 60 120"><joint type="free"/>
+      <geom type="sphere" size="1.5" density="500" contype="1" conaffinity="1" material="ball_mat"/>
+    </body>
+
+    <!-- Row 60 -->
+    <body name="ball_60_m60" pos="60 -60 120"><joint type="free"/>
+      <geom type="sphere" size="1.5" density="500" contype="1" conaffinity="1" material="ball_mat"/>
+    </body>
+    <body name="ball_60_m30" pos="60 -30 120"><joint type="free"/>
+      <geom type="sphere" size="1.5" density="500" contype="1" conaffinity="1" material="ball_mat"/>
+    </body>
+    <body name="ball_60_0" pos="60 0 120"><joint type="free"/>
+      <geom type="sphere" size="1.5" density="500" contype="1" conaffinity="1" material="ball_mat"/>
+    </body>
+    <body name="ball_60_30" pos="60 30 120"><joint type="free"/>
+      <geom type="sphere" size="1.5" density="500" contype="1" conaffinity="1" material="ball_mat"/>
+    </body>
+    <body name="ball_60_60" pos="60 60 120"><joint type="free"/>
+      <geom type="sphere" size="1.5" density="500" contype="1" conaffinity="1" material="ball_mat"/>
+    </body>
+
+  </worldbody>
+</mujoco>

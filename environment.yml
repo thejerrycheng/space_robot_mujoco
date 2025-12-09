@@ -1,0 +1,14 @@
+# this is an old environment file for mujoco 2.3.7
+name: mujoco23
+channels:
+  - defaults
+dependencies:
+  - python=3.10
+  - pip
+  - pip:
+      - mujoco==2.3.7
+      - numpy==1.26.4
+      - glfw
+      - pyopengl
+      - pillow
+      - matplotlib
