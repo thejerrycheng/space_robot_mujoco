@@ -1,1 +1,8 @@
 .DS_Store
+
+# training artefacts and logs
+runs/
+runs_*.log
+__pycache__/
+*.pyc
+MUJOCO_LOG.TXT
