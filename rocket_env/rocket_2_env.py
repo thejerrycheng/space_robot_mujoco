@@ -49,6 +49,11 @@ class RocketLandingEnv(gym.Env):
         self.yaw_act   = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_ACTUATOR, "yaw_motor")
         self.pitch_act = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_ACTUATOR, "pitch_motor")
         self.thrust_act= mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_ACTUATOR, "thrust")
+        # mj_name2id returns -1 on a missing name, and ctrl[-1] silently writes
+        # to the last actuator — fail loudly instead.
+        for name, idx in [("yaw_motor", self.yaw_act), ("pitch_motor", self.pitch_act), ("thrust", self.thrust_act)]:
+            if idx < 0:
+                raise ValueError(f"Actuator '{name}' not found in {MJCF_PATH}")
 
         # --- PHYSICS CONSTANTS ---
         self.DRY_MASS = self.model.body_mass[self.rocket_bid]

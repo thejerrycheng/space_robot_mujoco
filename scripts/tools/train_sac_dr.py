@@ -57,9 +57,10 @@ def make_env(rank, dr=True, curriculum=True):
 class StageCheckpoint(BaseCallback):
     """Save at each stage in STAGES and log the rolling outcome mix."""
 
-    def __init__(self, out_dir, stages, verbose=0):
+    def __init__(self, out_dir, stages, offset=0, verbose=0):
         super().__init__(verbose)
         self.out_dir = out_dir
+        self.offset = offset          # steps already trained before this call
         self.stages = sorted(stages)
         self.next_i = 0
         self.recent = []
@@ -73,7 +74,8 @@ class StageCheckpoint(BaseCallback):
         if len(self.recent) > 400:
             self.recent = self.recent[-400:]
 
-        while self.next_i < len(self.stages) and self.num_timesteps >= self.stages[self.next_i]:
+        total = self.num_timesteps + self.offset
+        while self.next_i < len(self.stages) and total >= self.stages[self.next_i]:
             n = self.stages[self.next_i]
             path = os.path.join(self.out_dir, f"stage_{n}")
             self.model.save(path)
@@ -88,8 +90,16 @@ class StageCheckpoint(BaseCallback):
             self.log_rows.append(row)
             print(f"[stage] {n:>9,} steps  success {rate*100:5.1f}%  "
                   f"curriculum {lvl:>2}  {row['wall_s']:.0f}s", flush=True)
-            with open(os.path.join(self.out_dir, "stages.json"), "w") as f:
-                json.dump(self.log_rows, f, indent=2)
+            path_json = os.path.join(self.out_dir, "stages.json")
+            rows = self.log_rows
+            if self.offset and os.path.exists(path_json):
+                try:
+                    prev = [r for r in json.load(open(path_json)) if r["steps"] < self.offset]
+                    rows = prev + self.log_rows
+                except Exception:
+                    pass
+            with open(path_json, "w") as f:
+                json.dump(rows, f, indent=2)
             self.next_i += 1
         return True
 
@@ -109,6 +119,8 @@ def main():
     ap.add_argument("--net", type=int, nargs=2, default=[256, 256])
     ap.add_argument("--device", default="cpu")
     ap.add_argument("--resume", default=None)
+    ap.add_argument("--from-steps", type=int, default=0,
+                    help="steps already trained, so stages continue rather than restart")
     a = ap.parse_args()
 
     out = os.path.join(ROOT, "runs", a.name)
@@ -126,7 +138,8 @@ def main():
     model = (SAC.load(a.resume, env=venv, device=a.device) if a.resume
              else SAC("MlpPolicy", venv, **kw))
 
-    cb = StageCheckpoint(out, [s for s in STAGES if s <= a.steps] + [a.steps])
+    cb = StageCheckpoint(out, [s for s in STAGES if a.from_steps < s <= a.steps] + [a.steps],
+                         offset=a.from_steps)
     t0 = time.time()
     model.learn(total_timesteps=a.steps, callback=cb, progress_bar=False)
     model.save(os.path.join(out, "final"))

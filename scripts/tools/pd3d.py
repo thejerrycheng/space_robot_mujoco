@@ -196,6 +196,13 @@ class PD3D:
         if m["lateral"] > g["gate_lateral"]:
             f_des[2] = max(f_des[2], g["thrust_floor"] * mass * G_MOON)
 
+        # NOTE.  Raising this floor unconditionally to give the gimbal authority
+        # on a straight-down descent was tried and made things worse: it slows
+        # the descent enough that the vehicle runs the clock out. The attitude
+        # limit cycle documented on the website is therefore a real property of
+        # this cascade on this vehicle, not a tuning oversight — the gimbal's
+        # authority scales with the very thrust an efficient descent minimises.
+
         # Cap the commanded tilt by ALTITUDE, not just by a constant.  Measured
         # on this model by bisecting the resting height at a range of tilts, the
         # centre of mass touches down at
