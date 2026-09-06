@@ -62,20 +62,28 @@ class RocketLandingDREnv(gym.Env):
     MAX_VELOCITY = 100.0
     LANDING_TOLERANCE = 10.0         # m, radius of the accepted pad
     LANDING_SPEED = 3.0              # m/s
-    LANDING_TILT = 0.10              # 1 - |q_w|, about 25 deg
+    LANDING_TILT_DEG = 15.0          # angle between the body axis and vertical
 
     # ---- domain randomisation ranges ---------------------------------------
     DR = dict(
-        mass_scale=(0.85, 1.15),      # dry mass
-        fuel_scale=(0.70, 1.30),      # propellant load
-        isp_scale=(0.90, 1.10),
-        thrust_scale=(0.85, 1.15),    # engine authority
-        gimbal_bias_deg=2.0,          # persistent misalignment, per axis
-        wind_acc=0.25,                # m/s^2, constant lateral disturbance
-        obs_pos_noise=0.5,            # m
-        obs_vel_noise=0.15,           # m/s
-        obs_quat_noise=0.004,
+        mass_scale=(0.80, 1.20),      # dry mass
+        fuel_scale=(0.65, 1.35),      # propellant load
+        isp_scale=(0.88, 1.12),
+        thrust_scale=(0.80, 1.20),    # engine authority
+        gimbal_bias_deg=2.5,          # persistent misalignment, per axis
+        gimbal_scale=(0.85, 1.15),    # gimbal gain error
+        rate0=0.04,                   # rad/s of initial body rate
+        obs_pos_noise=0.6,            # m
+        obs_vel_noise=0.20,           # m/s
+        obs_quat_noise=0.005,
     )
+    # A constant lateral acceleration disturbance was tried and removed. On the
+    # Moon there is no atmosphere, so the only thing it could model is a thrust
+    # misalignment — which the gimbal bias already models exactly — and it made
+    # the task partly impossible rather than merely hard: cancelling 0.25 m/s^2
+    # needs a permanent tilt of atan(a/g) = 8.8 deg, and the fin-strike limit
+    # (theta <= 4 (h - 1.5) deg) forbids that below 3.7 m of altitude. It took a
+    # well-tuned PD from 100 % to 42 % on the trivial case entirely on its own.
 
     def __init__(self, render_mode=None, model_path=MJCF_PATH,
                  domain_randomize=True, curriculum=True, seed=None):
@@ -133,16 +141,16 @@ class RocketLandingDREnv(gym.Env):
             self.max_thrust = self.MAX_THRUST * r.uniform(*D["thrust_scale"])
             b = np.deg2rad(D["gimbal_bias_deg"])
             self.gimbal_bias = r.uniform(-b, b, 2)
-            ang = r.uniform(0, 2 * np.pi)
-            w = r.uniform(0, D["wind_acc"])
-            self.wind = np.array([w * np.cos(ang), w * np.sin(ang), 0.0])
+            self.gimbal_gain = r.uniform(*D["gimbal_scale"])
+            self.rate0 = D["rate0"]
         else:
             self.dry_mass = self.DRY_MASS
             self.start_fuel = self.START_FUEL
             self.isp = self.ISP
             self.max_thrust = self.MAX_THRUST
             self.gimbal_bias = np.zeros(2)
-            self.wind = np.zeros(3)
+            self.gimbal_gain = 1.0
+            self.rate0 = 0.0
         # inertia scales with the mass the vehicle actually has
         self.base_inertia = np.array([1.2e9, 1.2e9, 3.0e7])
 
@@ -153,9 +161,10 @@ class RocketLandingDREnv(gym.Env):
         self.step_count += 1
         a = np.clip(np.asarray(action, dtype=np.float64), -1.0, 1.0)
 
+        self.last_action = a
         thrust_cmd = (a[0] + 1.0) * 0.5 * self.max_thrust
-        yaw_cmd = a[1] * self.MAX_GIMBAL + self.gimbal_bias[0]
-        pitch_cmd = a[2] * self.MAX_GIMBAL + self.gimbal_bias[1]
+        yaw_cmd = a[1] * self.MAX_GIMBAL * self.gimbal_gain + self.gimbal_bias[0]
+        pitch_cmd = a[2] * self.MAX_GIMBAL * self.gimbal_gain + self.gimbal_bias[1]
 
         # propellant
         if self.fuel_mass > 0.0:
@@ -175,10 +184,6 @@ class RocketLandingDREnv(gym.Env):
         self.data.ctrl[self.thrust_act] = thrust_cmd
         self.data.ctrl[self.yaw_act] = np.clip(yaw_cmd, -self.MAX_GIMBAL, self.MAX_GIMBAL)
         self.data.ctrl[self.pitch_act] = np.clip(pitch_cmd, -self.MAX_GIMBAL, self.MAX_GIMBAL)
-
-        # constant lateral disturbance, applied as a body force
-        if self.wind.any():
-            self.data.xfrc_applied[self.rocket_bid, :3] = self.wind * self.model.body_mass[self.rocket_bid]
 
         for _ in range(self.FRAME_SKIP):
             mujoco.mj_step(self.model, self.data)
@@ -211,12 +216,14 @@ class RocketLandingDREnv(gym.Env):
         r = {}
         alt = max(m["alt"], 0.0)
 
-        # attitude: 0 upright, -2 on its side
-        r["upright"] = -2.0 * (1.0 - m["quat_w"] ** 2)
+        # Attitude dominates the failure modes on this vehicle — a 100 m body
+        # that arrives at 87 deg is a write-off however close to the pad it is —
+        # so the upright term is the largest of the shaping penalties.
+        r["upright"] = -6.0 * (1.0 - m["cos_tilt"])
 
         # glideslope tracking, gated on being roughly upright so the policy is
         # not rewarded for diving at the pad nose-first
-        gate = 1.0 if m["quat_w"] > 0.85 else 0.0
+        gate = 1.0 if m["cos_tilt"] > 0.7 else 0.0        # within ~45 deg
         target_vz = -np.clip(0.35 * alt, 0.6, 22.0)
         # weight the glideslope error more heavily near the pad, where getting
         # it wrong is the difference between a landing and a crater
@@ -227,6 +234,9 @@ class RocketLandingDREnv(gym.Env):
         r["drift"] = -0.5 * min(float(np.linalg.norm(m["vel"][:2])), 20.0) / 20.0
         r["spin"] = -0.4 * min(float(np.linalg.norm(m["omega"])), 2.0) / 2.0
         r["fuel"] = -0.6 * (thrust / self.MAX_THRUST)
+        # discourage thrashing the gimbal: large deflections are how the policy
+        # tips itself over in the first place
+        r["gimbal"] = -0.5 * float(np.mean(np.abs(self.last_action[1:])))
         r["time"] = -0.25
 
         r["terminal"] = 0.0
@@ -240,7 +250,7 @@ class RocketLandingDREnv(gym.Env):
                 # +450 and the policy learned to arrive fast rather than flare.
                 q = (max(0.0, 1.0 - m["lateral"] / 40.0)
                      + max(0.0, 1.0 - m["speed"] / 15.0)
-                     + max(0.0, 1.0 - m["tilt"] / 0.3)) / 3.0
+                     + max(0.0, 1.0 - m["tilt_deg"] / 45.0)) / 3.0
                 r["terminal"] = -400.0 + 300.0 * q
             elif self.outcome == "timeout":
                 r["terminal"] = -500.0
@@ -259,7 +269,7 @@ class RocketLandingDREnv(gym.Env):
             terminated, self.outcome = True, "drift"
         elif m["speed"] > self.MAX_VELOCITY:
             terminated, self.outcome = True, "overspeed"
-        elif m["quat_w"] < 0.5:                       # past ~120 deg
+        elif m["cos_tilt"] < 0.0:                     # past 90 deg from vertical
             terminated, self.outcome = True, "tumble"
         elif self._in_contact():
             # The episode ends at first contact and the touchdown state is
@@ -269,7 +279,7 @@ class RocketLandingDREnv(gym.Env):
             # consecutive-contact counter never completes.
             terminated = True
             success = (m["speed"] < self.LANDING_SPEED
-                       and m["tilt"] < self.LANDING_TILT
+                       and m["tilt_deg"] < self.LANDING_TILT_DEG
                        and m["lateral"] < self.LANDING_TOLERANCE)
             self.outcome = "success" if success else "hard"
 
@@ -296,9 +306,9 @@ class RocketLandingDREnv(gym.Env):
         self.step_count = 0
         self.touchdown_steps = 0
         self.outcome = None
+        self.last_action = np.zeros(3)
 
         mujoco.mj_resetData(self.model, self.data)
-        self.data.xfrc_applied[:] = 0.0
         self._sample_vehicle()
         self.fuel_mass = self.start_fuel
         self.wet_mass = self.dry_mass + self.start_fuel
@@ -331,6 +341,9 @@ class RocketLandingDREnv(gym.Env):
 
         self.data.qvel[self.qvel_adr:self.qvel_adr + 3] = r.normal(0, vstd, 3)
         self.data.qvel[self.qvel_adr + 2] -= 2.0
+        if self.rate0 > 0:
+            self.data.qvel[self.qvel_adr + 3:self.qvel_adr + 6] = r.uniform(
+                -self.rate0, self.rate0, 3)
         mujoco.mj_forward(self.model, self.data)
         return self._obs(), {}
 
@@ -363,12 +376,21 @@ class RocketLandingDREnv(gym.Env):
         vel = self.data.qvel[self.qvel_adr:self.qvel_adr + 3].copy()
         quat = self.data.qpos[self.qpos_adr + 3:self.qpos_adr + 7].copy()
         omega = self.data.qvel[self.qvel_adr + 3:self.qvel_adr + 6].copy()
+        # Tilt is the angle between the body axis and vertical, i.e. R[2,2],
+        # NOT 1 - |q_w|.  The quaternion scalar also counts rotation *about* the
+        # body axis, which on this vehicle is unactuated (the gimbal produces no
+        # yaw torque) and completely harmless: a lander spinning slowly on its
+        # own axis while standing perfectly upright was being scored, penalised
+        # and terminated as though it were falling over.
+        R = self.data.xmat[self.rocket_bid].reshape(3, 3)
+        cos_tilt = float(np.clip(R[2, 2], -1.0, 1.0))
         return dict(pos=pos, vel=vel, quat=quat, omega=omega,
                     z=pos[2], alt=pos[2] - self.TARGET_Z, vz=vel[2],
-                    quat_w=abs(quat[0]),
+                    quat_w=abs(quat[0]), cos_tilt=cos_tilt,
+                    tilt_deg=float(np.degrees(np.arccos(cos_tilt))),
                     lateral=float(np.linalg.norm(pos[:2])),
                     speed=float(np.linalg.norm(vel)),
-                    tilt=1.0 - abs(quat[0]))
+                    tilt=1.0 - cos_tilt)
 
     def _obs(self):
         m = self._metrics()

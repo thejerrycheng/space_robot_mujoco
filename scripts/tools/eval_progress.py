@@ -31,8 +31,19 @@ INK, HI, GOLD, GREEN, ASH = "#151820", "#E4442A", "#D9A13F", "#2E9E5B", "#7A7466
 plt.rcParams.update({"font.size": 9, "axes.edgecolor": INK, "axes.linewidth": 0.9,
                      "figure.dpi": 140, "savefig.bbox": "tight", "legend.frameon": False})
 
-# The evaluation envelope: fixed, and the same for every controller.
-EVAL = dict(altitude=200.0, lateral=70.0, vel_std=8.0, tilt_deg=30.0)
+# The evaluation envelope: fixed, and the same for every controller.  It has to
+# discriminate: on the full curriculum envelope (200 m, 70 m offset, 8 m/s,
+# 30 deg) every controller tried scores zero and the progress curve is flat.
+EVAL = dict(altitude=80.0, lateral=20.0, vel_std=3.0, tilt_deg=10.0)
+
+# ... and a ladder, to show where each controller stops working.
+LADDER = [
+    ("hover",    dict(altitude=30.0,  lateral=0.0,  vel_std=0.0, tilt_deg=0.0)),
+    ("easy",     dict(altitude=60.0,  lateral=10.0, vel_std=1.0, tilt_deg=5.0)),
+    ("moderate", dict(altitude=80.0,  lateral=20.0, vel_std=3.0, tilt_deg=10.0)),
+    ("hard",     dict(altitude=140.0, lateral=40.0, vel_std=5.0, tilt_deg=20.0)),
+    ("full",     dict(altitude=200.0, lateral=70.0, vel_std=8.0, tilt_deg=30.0)),
+]
 
 
 def policy_rollout(env, model, options, record=False, seed=None):
@@ -51,7 +62,7 @@ def policy_rollout(env, model, options, record=False, seed=None):
     m = env._metrics()
     r = dict(outcome=info.get("outcome"), success=bool(info.get("success")),
              t=env.step_count * env.DT * env.FRAME_SKIP, lateral=m["lateral"], speed=m["speed"],
-             tilt_deg=float(np.degrees(2 * np.arccos(np.clip(abs(m["quat"][0]), 0, 1)))),
+             tilt_deg=m["tilt_deg"],
              vz=m["vz"], fuel_frac=env.fuel_mass / env.start_fuel)
     if record:
         r["trace"] = np.array(trace)
@@ -146,6 +157,30 @@ def fig_bundle(pd_traces, pol_traces, out, pol_label):
     fig.tight_layout(); save(fig, out, "tintin3d_bundle")
 
 
+def fig_ladder(env, pd, model, n, out, label):
+    """Success rate of both controllers up the difficulty ladder."""
+    rows = []
+    for name, opt in LADDER:
+        a = b = 0
+        for i in range(n):
+            a += pd_rollout(env, pd, options=opt, seed=8000 + i)["success"]
+            if model is not None:
+                b += policy_rollout(env, model, options=opt, seed=8000 + i)["success"]
+        rows.append((name, a / n * 100, b / n * 100))
+        print(f"  ladder {name:9s} PD {a/n*100:5.1f}%   policy {b/n*100:5.1f}%")
+    fig, ax = plt.subplots(figsize=(6.0, 3.0))
+    x = np.arange(len(rows))
+    ax.bar(x - 0.19, [r[1] for r in rows], 0.38, color=INK, edgecolor=INK, label="3-D PD")
+    ax.bar(x + 0.19, [r[2] for r in rows], 0.38, color=HI, edgecolor=INK, label=label)
+    ax.set_xticks(x, [f"{r[0]}\n{LADDER[i][1]['altitude']:.0f} m / {LADDER[i][1]['lateral']:.0f} m"
+                      for i, r in enumerate(rows)], fontsize=7.5)
+    ax.set_ylabel("success rate  [%]"); ax.set_ylim(0, 105)
+    ax.set_title(f"Where each controller stops working ({n} descents per cell)")
+    ax.legend(fontsize=8); ax.grid(True, ls=":", axis="y", alpha=.35)
+    fig.tight_layout(); save(fig, out, "tintin3d_ladder")
+    return [dict(level=r[0], pd=r[1], policy=r[2]) for r in rows]
+
+
 def fig_baseline(pd_stats, out):
     c = pd_stats["outcomes"]
     keys = list(c); vals = [c[k] / pd_stats["n"] * 100 for k in keys]
@@ -205,13 +240,17 @@ def main():
         if rec:
             last_traces, last_label = trs, f"SAC, {n/1e6:.1f}M steps" if n >= 1e6 else f"SAC, {n//1000}k steps"
 
+    ladder = []
     if stages:
         fig_progress(stages, pd_stats, out)
         fig_bundle(pd_traces, last_traces, out, last_label)
+        best = SAC.load(files[-1], device="cpu")
+        ladder = fig_ladder(env, pd, best, max(a.episodes // 3, 12), out, last_label)
     fig_baseline(pd_stats, out)
 
     with open(os.path.join(out, "tintin3d_results.json"), "w") as f:
-        json.dump(dict(pd=pd_stats, stages=stages, eval_envelope=EVAL), f, indent=2)
+        json.dump(dict(pd=pd_stats, stages=stages, ladder=ladder,
+                       eval_envelope=EVAL), f, indent=2)
     print("  wrote tintin3d_results.json")
 
 

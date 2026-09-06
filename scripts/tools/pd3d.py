@@ -62,7 +62,7 @@ G_MOON = 1.62
 # Gains above those numbers just saturate both loops and turn the cascade into a
 # bang-bang oscillator, which is what a naively-tuned PD does here.
 DEFAULT_GAINS = dict(kp_xy=0.048, kd_xy=0.95, kd_z=0.90, glide=0.55,
-                     t_lag=3.0, v_lat_max=11.0,
+                     t_lag=3.0, v_lat_max=16.0, ki_xy=0.004, i_lim=0.45,
                      a_up_frac=0.55, flare=6.0, vz_max=26.0, touch_vz=1.2,
                      lat_hold=110.0,
                      kp_att=1.1, kd_att=2.41, tilt_max_deg=35.0,
@@ -73,9 +73,15 @@ DEFAULT_GAINS = dict(kp_xy=0.048, kd_xy=0.95, kd_z=0.90, glide=0.55,
                      # controller assumed 2.0 m/s^2, commanded approach speeds
                      # it could not arrest, and flew through the pad in a limit
                      # cycle it never left.
-                     a_lat_max=1.1, contact_slope=4.0, contact_z0=1.5,
+                     a_lat_max=1.1,
+                     # The tilt cap has to sit BELOW the fin-strike boundary,
+                     # not on it.  With theta <= 4 (h - 1.5) — the boundary
+                     # itself — the vehicle simply arrives at whatever tilt the
+                     # cap allows, which is by construction the largest tilt
+                     # that still counts as contact rather than a strike.
+                     contact_slope=2.0, contact_z0=2.0,
                      thrust_floor=1.0,
-                     gate_alt=25.0, gate_lateral=4.0, gate_hspeed=0.8,
+                     gate_alt=55.0, gate_lateral=8.0, gate_hspeed=0.8,
                      gate_tilt_deg=8.0)
 
 
@@ -97,6 +103,13 @@ class PD3D:
         self.env = env
         self.g = dict(DEFAULT_GAINS)
         self.g.update(gains)
+        self.reset()
+
+    def reset(self):
+        # Integral state on the lateral channel.  A constant disturbance needs a
+        # permanent tilt to cancel, and a pure PD has no way to hold one: it
+        # settles at whatever offset makes its proportional term match.
+        self.i_xy = np.zeros(2)
 
     def __call__(self, env):
         g = self.g
@@ -134,7 +147,7 @@ class PD3D:
         # metres up.  Below the gate altitude the controller refuses to descend
         # until it is centred, upright and no longer moving sideways.
         hspeed = float(np.linalg.norm(v[:2]))
-        tilt_deg = float(np.degrees(2 * np.arccos(np.clip(abs(q[0]), 0.0, 1.0))))
+        tilt_deg = m["tilt_deg"]
         composed = (m["lateral"] < g["gate_lateral"] and hspeed < g["gate_hspeed"]
                     and tilt_deg < g["gate_tilt_deg"])
         if alt < g["gate_alt"] and not composed:
@@ -163,6 +176,9 @@ class PD3D:
         else:
             v_ref_xy = np.zeros(2)
         a_lat = g["kd_xy"] * (v_ref_xy - v[:2])
+        self.i_xy = np.clip(self.i_xy + g["ki_xy"] * (-p[:2]) * env.DT * env.FRAME_SKIP,
+                            -g["i_lim"], g["i_lim"])
+        a_lat = a_lat + self.i_xy
         n = np.linalg.norm(a_lat)
         if n > g["a_lat_max"]:
             a_lat *= g["a_lat_max"] / n
@@ -238,7 +254,7 @@ def rollout(env, ctrl, options=None, record=False, seed=None):
     m = env._metrics()
     res = dict(outcome=info.get("outcome"), success=bool(info.get("success")),
                t=env.step_count * env.DT * env.FRAME_SKIP, lateral=m["lateral"], speed=m["speed"],
-               tilt_deg=float(np.degrees(2 * np.arccos(np.clip(abs(m["quat"][0]), 0, 1)))),
+               tilt_deg=m["tilt_deg"],
                vz=m["vz"], alt=m["alt"],
                fuel_frac=env.fuel_mass / env.start_fuel)
     if record:
